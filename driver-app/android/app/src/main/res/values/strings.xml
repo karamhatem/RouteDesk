@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">RouteDeskDriver</string>
+    <string name="title_activity_main">RouteDeskDriver</string>
+    <string name="package_name">com.routedesk.driver</string>
+    <string name="custom_url_scheme">com.routedesk.driver</string>
+</resources>

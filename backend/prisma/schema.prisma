@@ -1,0 +1,167 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  ADMIN
+  DRIVER
+  ACCOUNTANT
+}
+
+enum BusinessType {
+  RESTAURANT
+  SUPERMARKET
+  PHARMACY
+  BAKERY
+  FLOWERS
+  STORE
+  OTHER
+}
+
+enum TransactionType {
+  COLLECTION
+  SETTLEMENT
+  ADJUSTMENT
+}
+
+enum TrackingIncidentType {
+  LOCATION_DISABLED
+  CONNECTION_LOST
+  APP_INACTIVE
+}
+
+model User {
+  id        Int      @id @default(autoincrement())
+  name      String
+  phone     String   @unique
+  password  String
+  role      Role     @default(DRIVER)
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+
+  driverProfile DriverProfile?
+  reports Report[]
+  driverTransactions Transaction[] @relation("DriverTransactions")
+  recordedTransactions Transaction[] @relation("RecordedTransactions")
+  trackingIncidents TrackingIncident[]
+  assignedBusinesses DriverBusiness[]
+  sentMessages Message[] @relation("SentMessages")
+  receivedMessages Message[] @relation("ReceivedMessages")
+}
+
+model DriverProfile {
+  id Int @id @default(autoincrement())
+  userId Int @unique
+  vehicleType String?
+  vehiclePlate String?
+  balance Float @default(0)
+  lastLatitude Float?
+  lastLongitude Float?
+  lastSeen DateTime?
+  locationSharingEnabled Boolean @default(false)
+  locationSharingStartedAt DateTime?
+  locationSharingStoppedAt DateTime?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model Business {
+  id Int @id @default(autoincrement())
+  name String
+  type BusinessType @default(OTHER)
+  phone String?
+  address String?
+  latitude Float?
+  longitude Float?
+  isActive Boolean @default(true)
+  createdAt DateTime @default(now())
+
+  reports Report[]
+  transactions Transaction[]
+  assignedDrivers DriverBusiness[]
+}
+
+model DriverBusiness {
+  id Int @id @default(autoincrement())
+  driverId Int
+  businessId Int
+  assignedAt DateTime @default(now())
+  isActive Boolean @default(true)
+
+  driver User @relation(fields: [driverId], references: [id], onDelete: Cascade)
+  business Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+
+  @@unique([driverId, businessId])
+}
+
+model Report {
+  id Int @id @default(autoincrement())
+  title String
+  description String?
+  createdAt DateTime @default(now())
+  driverId Int
+  businessId Int
+
+  driver User @relation(fields: [driverId], references: [id])
+  business Business @relation(fields: [businessId], references: [id])
+  returnItems ReturnItem[]
+}
+
+model ReturnItem {
+  id Int @id @default(autoincrement())
+  itemName String
+  quantity Int
+  reason String?
+  note String?
+  reportId Int
+
+  report Report @relation(fields: [reportId], references: [id], onDelete: Cascade)
+}
+
+model Transaction {
+  id Int @id @default(autoincrement())
+  type TransactionType
+  amount Float
+  note String?
+  createdAt DateTime @default(now())
+  driverId Int
+  businessId Int?
+  recordedBy Int
+
+  driver User @relation("DriverTransactions", fields: [driverId], references: [id])
+  business Business? @relation(fields: [businessId], references: [id])
+  recorder User @relation("RecordedTransactions", fields: [recordedBy], references: [id])
+}
+
+model TrackingIncident {
+  id Int @id @default(autoincrement())
+  type TrackingIncidentType
+  startedAt DateTime @default(now())
+  endedAt DateTime?
+  durationSeconds Int?
+  lastLatitude Float?
+  lastLongitude Float?
+  lastSeen DateTime?
+  note String?
+  driverId Int
+  createdAt DateTime @default(now())
+
+  driver User @relation(fields: [driverId], references: [id], onDelete: Cascade)
+}
+
+model Message {
+  id Int @id @default(autoincrement())
+  senderId Int
+  receiverId Int
+  text String
+  isRead Boolean @default(false)
+  createdAt DateTime @default(now())
+
+  sender User @relation("SentMessages", fields: [senderId], references: [id], onDelete: Cascade)
+  receiver User @relation("ReceivedMessages", fields: [receiverId], references: [id], onDelete: Cascade)
+}

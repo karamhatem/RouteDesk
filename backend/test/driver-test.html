@@ -1,0 +1,461 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+
+<head>
+    <meta charset="UTF-8">
+
+    <title>RouteDesk Driver Test</title>
+
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 40px auto;
+            padding: 20px;
+            background: #f4f7fb;
+        }
+
+        .card {
+            background: white;
+            border: 1px solid #ddd;
+            border-radius: 12px;
+            padding: 20px;
+            margin-top: 20px;
+        }
+
+        input {
+            width: 100%;
+            padding: 10px;
+            box-sizing: border-box;
+            margin: 8px 0;
+        }
+
+        button {
+            padding: 10px 20px;
+            margin: 5px;
+            cursor: pointer;
+            border: none;
+            border-radius: 8px;
+        }
+
+        .connect-button {
+            background: #2563eb;
+            color: white;
+        }
+
+        .send-button {
+            background: #0f766e;
+            color: white;
+        }
+
+        .start-button {
+            background: #16a34a;
+            color: white;
+        }
+
+        .stop-button {
+            background: #dc2626;
+            color: white;
+        }
+
+        #status {
+            font-weight: bold;
+        }
+
+        #movementStatus {
+            font-weight: bold;
+        }
+    </style>
+</head>
+
+
+<body>
+
+    <h1>RouteDesk - Driver Live Test</h1>
+
+
+    <div class="card">
+
+        <h2>اتصال السائق</h2>
+
+        <input
+            id="token"
+            type="password"
+            placeholder="ضع توكن Ali هنا"
+        >
+
+
+        <button
+            class="connect-button"
+            onclick="connectDriver()"
+        >
+            اتصال
+        </button>
+
+
+        <p id="status">
+            🔴 غير متصل
+        </p>
+
+    </div>
+
+
+
+    <div class="card">
+
+        <h2>إرسال موقع يدوي</h2>
+
+
+        <label>Latitude</label>
+
+        <input
+            id="latitude"
+            type="number"
+            step="any"
+            value="36.3456"
+        >
+
+
+        <label>Longitude</label>
+
+        <input
+            id="longitude"
+            type="number"
+            step="any"
+            value="43.1234"
+        >
+
+
+        <button
+            class="send-button"
+            onclick="sendLocation()"
+        >
+            إرسال الموقع
+        </button>
+
+
+        <p id="result">
+            لم يتم إرسال موقع بعد
+        </p>
+
+    </div>
+
+
+
+    <div class="card">
+
+        <h2>اختبار الحركة الحية</h2>
+
+        <p>
+            يحرك موقع Ali تلقائيًا كل 3 ثوانٍ.
+        </p>
+
+
+        <button
+            class="start-button"
+            onclick="startMovement()"
+        >
+            ▶ بدء الحركة
+        </button>
+
+
+        <button
+            class="stop-button"
+            onclick="stopMovement()"
+        >
+            ⏹ إيقاف الحركة
+        </button>
+
+
+        <p id="movementStatus">
+            الحركة متوقفة
+        </p>
+
+    </div>
+
+
+
+    <script src="http://localhost:5000/socket.io/socket.io.js"></script>
+
+
+    <script>
+
+        let socket = null;
+
+        let movementInterval = null;
+
+        let currentLatitude = 36.3456;
+
+        let currentLongitude = 43.1234;
+
+
+
+        // ========================================
+        // اتصال السائق
+        // ========================================
+
+        function connectDriver() {
+
+            const token =
+                document
+                    .getElementById("token")
+                    .value
+                    .trim();
+
+
+            if (!token) {
+
+                alert("ضع توكن السائق Ali");
+
+                return;
+            }
+
+
+            if (socket) {
+
+                socket.disconnect();
+
+            }
+
+
+            socket = io(
+                "http://localhost:5000",
+                {
+                    auth: {
+                        token: token
+                    }
+                }
+            );
+
+
+
+            socket.on("connect", () => {
+
+                document
+                    .getElementById("status")
+                    .textContent =
+                    "🟢 Ali متصل بالسيرفر";
+
+            });
+
+
+
+            socket.on(
+                "driver:location-accepted",
+                (data) => {
+
+                    console.log(
+                        "Location accepted:",
+                        data
+                    );
+
+
+                    document
+                        .getElementById("result")
+                        .textContent =
+                        "✅ تم إرسال الموقع للمدير";
+
+                }
+            );
+
+
+
+            socket.on(
+                "tracking:error",
+                (error) => {
+
+                    document
+                        .getElementById("result")
+                        .textContent =
+                        "❌ خطأ: " + error.message;
+
+                }
+            );
+
+
+
+            socket.on(
+                "connect_error",
+                (error) => {
+
+                    document
+                        .getElementById("status")
+                        .textContent =
+                        "🔴 فشل الاتصال: " +
+                        error.message;
+
+                }
+            );
+
+
+
+            socket.on(
+                "disconnect",
+                () => {
+
+                    document
+                        .getElementById("status")
+                        .textContent =
+                        "🔴 Ali غير متصل";
+
+                    stopMovement();
+
+                }
+            );
+
+        }
+
+
+
+        // ========================================
+        // إرسال موقع يدوي
+        // ========================================
+
+        function sendLocation() {
+
+            if (!socket || !socket.connected) {
+
+                alert("اتصل بالسيرفر أولاً");
+
+                return;
+            }
+
+
+            const latitude =
+                Number(
+                    document
+                        .getElementById("latitude")
+                        .value
+                );
+
+
+            const longitude =
+                Number(
+                    document
+                        .getElementById("longitude")
+                        .value
+                );
+
+
+            socket.emit(
+                "driver:location",
+                {
+                    latitude,
+                    longitude,
+                    lastSeen:
+                        new Date().toISOString()
+                }
+            );
+
+
+            document
+                .getElementById("result")
+                .textContent =
+                `📡 إرسال: ${latitude}, ${longitude}`;
+
+        }
+
+
+
+        // ========================================
+        // بدء الحركة التجريبية
+        // ========================================
+
+        function startMovement() {
+
+            if (!socket || !socket.connected) {
+
+                alert("اتصل بالسيرفر أولاً");
+
+                return;
+            }
+
+
+            if (movementInterval) {
+
+                return;
+
+            }
+
+
+            document
+                .getElementById("movementStatus")
+                .textContent =
+                "🚗 Ali يتحرك الآن...";
+
+
+            movementInterval = setInterval(() => {
+
+                currentLatitude += 0.001;
+
+                currentLongitude += 0.001;
+
+
+                document
+                    .getElementById("latitude")
+                    .value =
+                    currentLatitude.toFixed(6);
+
+
+                document
+                    .getElementById("longitude")
+                    .value =
+                    currentLongitude.toFixed(6);
+
+
+                socket.emit(
+                    "driver:location",
+                    {
+                        latitude:
+                            currentLatitude,
+
+                        longitude:
+                            currentLongitude,
+
+                        lastSeen:
+                            new Date().toISOString()
+                    }
+                );
+
+
+                document
+                    .getElementById("result")
+                    .textContent =
+                    `🚗 موقع جديد: ${currentLatitude.toFixed(6)}, ${currentLongitude.toFixed(6)}`;
+
+
+            }, 3000);
+
+        }
+
+
+
+        // ========================================
+        // إيقاف الحركة
+        // ========================================
+
+        function stopMovement() {
+
+            if (movementInterval) {
+
+                clearInterval(
+                    movementInterval
+                );
+
+                movementInterval = null;
+
+            }
+
+
+            document
+                .getElementById("movementStatus")
+                .textContent =
+                "⏹ الحركة متوقفة";
+
+        }
+
+    </script>
+
+</body>
+
+</html>

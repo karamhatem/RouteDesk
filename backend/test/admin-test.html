@@ -1,0 +1,337 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+
+<head>
+    <meta charset="UTF-8">
+    <title>RouteDesk Live Tracking Test</title>
+
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 900px;
+            margin: 40px auto;
+            padding: 20px;
+        }
+
+        .card {
+            border: 1px solid #ddd;
+            border-radius: 12px;
+            padding: 20px;
+            margin-top: 20px;
+        }
+
+        input {
+            width: 100%;
+            padding: 10px;
+            box-sizing: border-box;
+            margin: 10px 0;
+        }
+
+        button {
+            padding: 10px 20px;
+            cursor: pointer;
+        }
+
+        #status {
+            font-weight: bold;
+        }
+
+        .alert {
+            border: 1px solid #ccc;
+            border-radius: 8px;
+            padding: 12px;
+            margin-top: 10px;
+        }
+    </style>
+</head>
+
+<body>
+
+    <h1>RouteDesk - Live Tracking Test</h1>
+
+    <div class="card">
+        <h2>اتصال المدير</h2>
+
+        <input
+            id="token"
+            type="password"
+            placeholder="ضع توكن المدير هنا"
+        >
+
+        <button onclick="connectAdmin()">
+            اتصال
+        </button>
+
+        <p id="status">
+            غير متصل
+        </p>
+    </div>
+
+
+    <div class="card">
+
+        <h2>آخر تحديث للسائق</h2>
+
+        <p>
+            السائق:
+            <span id="driverName">-</span>
+        </p>
+
+        <p>
+            Driver ID:
+            <span id="driverId">-</span>
+        </p>
+
+        <p>
+            Latitude:
+            <span id="latitude">-</span>
+        </p>
+
+        <p>
+            Longitude:
+            <span id="longitude">-</span>
+        </p>
+
+        <p>
+            Last Seen:
+            <span id="lastSeen">-</span>
+        </p>
+
+    </div>
+
+
+    <div class="card">
+
+        <h2>تنبيهات التتبع</h2>
+
+        <div id="alerts">
+            لا توجد تنبيهات حاليًا
+        </div>
+
+    </div>
+
+
+    <script src="http://localhost:5000/socket.io/socket.io.js"></script>
+
+    <script>
+
+        let socket = null;
+
+
+        function addAlert(message) {
+
+            const alerts =
+                document.getElementById("alerts");
+
+
+            if (
+                alerts.textContent.trim() ===
+                "لا توجد تنبيهات حاليًا"
+            ) {
+                alerts.innerHTML = "";
+            }
+
+
+            const div =
+                document.createElement("div");
+
+            div.className = "alert";
+
+            div.textContent =
+                new Date().toLocaleTimeString() +
+                " - " +
+                message;
+
+            alerts.prepend(div);
+
+        }
+
+
+        function formatDuration(seconds) {
+
+            const minutes =
+                Math.floor(seconds / 60);
+
+            const remainingSeconds =
+                seconds % 60;
+
+
+            return (
+                minutes +
+                " دقيقة و " +
+                remainingSeconds +
+                " ثانية"
+            );
+
+        }
+
+
+        function connectAdmin() {
+
+            const token =
+                document
+                    .getElementById("token")
+                    .value
+                    .trim();
+
+
+            if (!token) {
+
+                alert("ضع توكن المدير");
+
+                return;
+            }
+
+
+            socket = io(
+                "http://localhost:5000",
+                {
+                    auth: {
+                        token: token
+                    }
+                }
+            );
+
+
+            socket.on("connect", () => {
+
+                document
+                    .getElementById("status")
+                    .textContent =
+                    "متصل بالسيرفر";
+
+                socket.emit(
+                    "admin:join-tracking"
+                );
+
+            });
+
+
+            socket.on(
+                "tracking:joined",
+                () => {
+
+                    document
+                        .getElementById("status")
+                        .textContent =
+                        "متصل ويستقبل مواقع وتنبيهات السواق";
+
+                }
+            );
+
+
+            // ========================================
+            // تحديث الموقع المباشر
+            // ========================================
+            socket.on(
+                "driver:location-updated",
+                (data) => {
+
+                    document
+                        .getElementById("driverName")
+                        .textContent =
+                        data.driverName;
+
+
+                    document
+                        .getElementById("driverId")
+                        .textContent =
+                        data.driverId;
+
+
+                    document
+                        .getElementById("latitude")
+                        .textContent =
+                        data.latitude;
+
+
+                    document
+                        .getElementById("longitude")
+                        .textContent =
+                        data.longitude;
+
+
+                    document
+                        .getElementById("lastSeen")
+                        .textContent =
+                        new Date(
+                            data.lastSeen
+                        ).toLocaleString();
+
+                }
+            );
+
+
+            // ========================================
+            // تنبيه توقف تحديث الموقع
+            // ========================================
+            socket.on(
+                "driver:tracking-inactive",
+                (data) => {
+
+                    addAlert(
+                        "⚠️ السائق " +
+                        data.driverName +
+                        " توقف عن إرسال الموقع. آخر ظهور: " +
+                        new Date(
+                            data.lastSeen
+                        ).toLocaleString()
+                    );
+
+                }
+            );
+
+
+            // ========================================
+            // تنبيه رجوع التتبع
+            // ========================================
+            socket.on(
+                "driver:tracking-restored",
+                (data) => {
+
+                    addAlert(
+                        "✅ عاد تتبع السائق " +
+                        data.driverName +
+                        " بعد توقف لمدة " +
+                        formatDuration(
+                            data.durationSeconds
+                        )
+                    );
+
+                }
+            );
+
+
+            socket.on(
+                "tracking:error",
+                (error) => {
+
+                    addAlert(
+                        "خطأ: " +
+                        error.message
+                    );
+
+                }
+            );
+
+
+            socket.on(
+                "connect_error",
+                (error) => {
+
+                    document
+                        .getElementById("status")
+                        .textContent =
+                        "فشل الاتصال: " +
+                        error.message;
+
+                }
+            );
+
+        }
+
+    </script>
+
+</body>
+
+</html>

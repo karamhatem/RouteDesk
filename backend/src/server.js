@@ -879,9 +879,13 @@ io.on("connection", (socket) => {
                 activeCalls.set(callId, {
                     callId,
                     callerId: socket.user.id,
+                    callerSocketId: socket.id,
                     receiverId,
+                    receiverSocketId: null,
                     callType,
                     status: "ringing",
+                    offerForwarded: false,
+                    answerForwarded: false,
                     createdAt: Date.now()
                 });
 
@@ -978,6 +982,7 @@ io.on("connection", (socket) => {
 
             call.status = "accepted";
             call.acceptedById = socket.user.id;
+            call.receiverSocketId = socket.id;
             activeCalls.set(data.callId, call);
 
             const payload = {
@@ -999,12 +1004,17 @@ io.on("connection", (socket) => {
                         .toISOString()
             };
 
-            io.to(
-                `user-${callerId}`
-            ).emit(
-                "call:accepted",
-                payload
-            );
+            if (call.callerSocketId) {
+                io.to(call.callerSocketId).emit(
+                    "call:accepted",
+                    payload
+                );
+            } else {
+                io.to(`user-${callerId}`).emit(
+                    "call:accepted",
+                    payload
+                );
+            }
 
             socket.emit(
                 "call:accepted-local",
@@ -1205,28 +1215,41 @@ io.on("connection", (socket) => {
                 return;
             }
 
-            io.to(
-                `user-${receiverId}`
-            ).emit(
-                "webrtc:offer",
-                {
+            const senderIsCaller = Number(call.callerId) === Number(socket.user.id);
+            const senderIsReceiver = Number(call.receiverId) === Number(socket.user.id);
 
-                    callId:
-                        data.callId,
+            if (!senderIsCaller && !senderIsReceiver) {
+                return socket.emit("call:error", {
+                    message: "You are not a participant in this call"
+                });
+            }
 
-                    senderId:
-                        socket.user.id,
+            if (call.offerForwarded) {
+                console.log("Ignoring duplicate WebRTC offer for call:", data.callId);
+                return;
+            }
 
-                    senderName:
-                        socket.user.name,
+            call.offerForwarded = true;
+            activeCalls.set(data.callId, call);
 
-                    callType:
-                        data.callType,
+            const targetSocketId =
+                Number(receiverId) === Number(call.callerId)
+                    ? call.callerSocketId
+                    : call.receiverSocketId;
 
-                    offer:
-                        data.offer
-                }
-            );
+            const payload = {
+                callId: data.callId,
+                senderId: socket.user.id,
+                senderName: socket.user.name,
+                callType: data.callType || call.callType,
+                offer: data.offer
+            };
+
+            if (targetSocketId) {
+                io.to(targetSocketId).emit("webrtc:offer", payload);
+            } else {
+                io.to(`user-${receiverId}`).emit("webrtc:offer", payload);
+            }
         }
     );
 
@@ -1272,25 +1295,40 @@ io.on("connection", (socket) => {
                 return;
             }
 
+            const senderIsCaller = Number(call.callerId) === Number(socket.user.id);
+            const senderIsReceiver = Number(call.receiverId) === Number(socket.user.id);
+
+            if (!senderIsCaller && !senderIsReceiver) {
+                return socket.emit("call:error", {
+                    message: "You are not a participant in this call"
+                });
+            }
+
+            if (call.answerForwarded) {
+                console.log("Ignoring duplicate WebRTC answer for call:", data.callId);
+                return;
+            }
+
             call.status = "active";
+            call.answerForwarded = true;
             activeCalls.set(data.callId, call);
 
-            io.to(
-                `user-${receiverId}`
-            ).emit(
-                "webrtc:answer",
-                {
+            const targetSocketId =
+                Number(receiverId) === Number(call.callerId)
+                    ? call.callerSocketId
+                    : call.receiverSocketId;
 
-                    callId:
-                        data.callId,
+            const payload = {
+                callId: data.callId,
+                senderId: socket.user.id,
+                answer: data.answer
+            };
 
-                    senderId:
-                        socket.user.id,
-
-                    answer:
-                        data.answer
-                }
-            );
+            if (targetSocketId) {
+                io.to(targetSocketId).emit("webrtc:answer", payload);
+            } else {
+                io.to(`user-${receiverId}`).emit("webrtc:answer", payload);
+            }
         }
     );
 
@@ -1330,22 +1368,29 @@ io.on("connection", (socket) => {
                 return;
             }
 
-            io.to(
-                `user-${receiverId}`
-            ).emit(
-                "webrtc:ice-candidate",
-                {
+            const senderIsCaller = Number(call.callerId) === Number(socket.user.id);
+            const senderIsReceiver = Number(call.receiverId) === Number(socket.user.id);
 
-                    callId:
-                        data.callId,
+            if (!senderIsCaller && !senderIsReceiver) {
+                return;
+            }
 
-                    senderId:
-                        socket.user.id,
+            const targetSocketId =
+                Number(receiverId) === Number(call.callerId)
+                    ? call.callerSocketId
+                    : call.receiverSocketId;
 
-                    candidate:
-                        data.candidate
-                }
-            );
+            const payload = {
+                callId: data.callId,
+                senderId: socket.user.id,
+                candidate: data.candidate
+            };
+
+            if (targetSocketId) {
+                io.to(targetSocketId).emit("webrtc:ice-candidate", payload);
+            } else {
+                io.to(`user-${receiverId}`).emit("webrtc:ice-candidate", payload);
+            }
         }
     );
 

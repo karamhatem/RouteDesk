@@ -21,6 +21,9 @@ function App() {
   const activeCallIdRef = useRef(null);
   const ringtoneTimerRef = useRef(null);
   const audioContextRef = useRef(null);
+  const processedOfferKeysRef = useRef(new Set());
+  const processedAnswerKeysRef = useRef(new Set());
+  const isCreatingOfferRef = useRef(false);
 
   const [data, setData] = useState(null);
   const [driverDetails, setDriverDetails] = useState(null);
@@ -64,6 +67,7 @@ function App() {
 
   const [chatDrivers, setChatDrivers] = useState([]);
   const [selectedChatDriver, setSelectedChatDriver] = useState(null);
+  const selectedChatDriverRef = useRef(null);
   const [chatMessages, setChatMessages] = useState([]);
   const [chatText, setChatText] = useState("");
   const [chatLoading, setChatLoading] = useState(false);
@@ -874,6 +878,9 @@ function App() {
     stopRingtone();
     closeCallMedia();
     activeCallIdRef.current = null;
+    processedOfferKeysRef.current.clear();
+    processedAnswerKeysRef.current.clear();
+    isCreatingOfferRef.current = false;
     setIncomingCall(null);
     setOutgoingCall(null);
     setCallStatus("");
@@ -913,6 +920,13 @@ function App() {
   const createPeerConnection = (otherUserId, callId) => {
     const socket = chatSocketRef.current;
 
+    if (peerConnectionRef.current) {
+      try {
+        peerConnectionRef.current.close();
+      } catch (_) {}
+      peerConnectionRef.current = null;
+    }
+
     const pc = new RTCPeerConnection({
       iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
     });
@@ -937,6 +951,12 @@ function App() {
       if (remoteMediaRef.current) {
         remoteMediaRef.current.srcObject = remoteStream;
         remoteMediaRef.current.play?.().catch(() => {});
+      }
+    };
+
+    pc.onconnectionstatechange = () => {
+      if (["failed", "closed", "disconnected"].includes(pc.connectionState)) {
+        console.warn("WebRTC connection state:", pc.connectionState);
       }
     };
 
@@ -1135,6 +1155,10 @@ function App() {
   }, []);
 
   useEffect(() => {
+    selectedChatDriverRef.current = selectedChatDriver;
+  }, [selectedChatDriver]);
+
+  useEffect(() => {
     if (!user) return;
 
     const restrictedViews = [
@@ -1171,7 +1195,7 @@ function App() {
           return currentMessages;
         }
 
-        const activeDriverId = selectedChatDriver?.id;
+        const activeDriverId = selectedChatDriverRef.current?.id;
 
         if (
           activeDriverId &&
@@ -1235,7 +1259,16 @@ function App() {
 
     socket.on("call:accepted", async (payload) => {
       try {
-        if (payload.callId && activeCallIdRef.current && payload.callId !== activeCallIdRef.current) {
+        if (
+          payload.callId &&
+          activeCallIdRef.current &&
+          payload.callId !== activeCallIdRef.current
+        ) {
+          return;
+        }
+
+        if (isCreatingOfferRef.current) {
+          console.warn("Ignoring duplicate call:accepted while creating offer");
           return;
         }
 
@@ -1248,6 +1281,11 @@ function App() {
         const callType = currentCall?.callType || activeCallType || payload.callType || "audio";
         const otherUserId = payload.acceptedById;
 
+        if (!otherUserId) {
+          throw new Error("لم يتم تحديد الطرف الآخر للمكالمة");
+        }
+
+        isCreatingOfferRef.current = true;
         setActiveCallType(callType);
 
         const stream = await startLocalMedia(callType);
@@ -1270,25 +1308,34 @@ function App() {
         notifyOtherSideCallEnded();
         resetCallState("تم إنهاء المكالمة");
         setError("تعذر تشغيل المايك أو الكاميرا: " + err.message);
+      } finally {
+        isCreatingOfferRef.current = false;
       }
     });
 
     socket.on("webrtc:offer", async (payload) => {
       try {
+        if (
+          payload.callId &&
+          activeCallIdRef.current &&
+          payload.callId !== activeCallIdRef.current
+        ) {
+          return;
+        }
+
+        const offerKey = `${payload.callId}:${payload.senderId}`;
+        if (processedOfferKeysRef.current.has(offerKey)) {
+          console.warn("Ignoring duplicate WebRTC offer:", offerKey);
+          return;
+        }
+
+        processedOfferKeysRef.current.add(offerKey);
+        activeCallIdRef.current = payload.callId;
+
         const callType = payload.callType || activeCallType || incomingCall?.callType || "audio";
         setActiveCallType(callType);
 
-        const stream = await navigator.mediaDevices.getUserMedia({
-          audio: true,
-          video: callType === "video",
-        });
-
-        localStreamRef.current = stream;
-
-        if (localVideoRef.current && callType === "video") {
-          localVideoRef.current.srcObject = stream;
-        }
-
+        const stream = await startLocalMedia(callType);
         const pc = createPeerConnection(payload.senderId, payload.callId);
 
         stream.getTracks().forEach((track) => {
@@ -1300,6 +1347,7 @@ function App() {
         for (const candidate of pendingIceCandidatesRef.current) {
           await pc.addIceCandidate(candidate);
         }
+
         pendingIceCandidatesRef.current = [];
 
         const answer = await pc.createAnswer();
@@ -1332,12 +1380,15 @@ function App() {
         const pc = peerConnectionRef.current;
         if (!pc) return;
 
-        // مهم جدًا: أحيانًا يوصل answer مرتين أو متأخر.
-        // إذا حالة الاتصال ليست have-local-offer، نتجاهله حتى لا يظهر خطأ:
-        // Failed to set remote answer SDP: Called in wrong state: stable
+        const answerKey = `${payload.callId}:${payload.senderId || "unknown"}`;
+        if (processedAnswerKeysRef.current.has(answerKey)) {
+          console.warn("Ignoring duplicate WebRTC answer:", answerKey);
+          return;
+        }
+
         if (pc.signalingState !== "have-local-offer") {
           console.warn(
-            "Ignoring duplicate/late WebRTC answer. Current state:",
+            "Ignoring late WebRTC answer. Current state:",
             pc.signalingState
           );
           return;
@@ -1346,6 +1397,8 @@ function App() {
         await pc.setRemoteDescription(
           new RTCSessionDescription(payload.answer)
         );
+
+        processedAnswerKeysRef.current.add(answerKey);
 
         for (const candidate of pendingIceCandidatesRef.current) {
           await pc.addIceCandidate(candidate);
@@ -1453,7 +1506,7 @@ function App() {
       socket.disconnect();
       chatSocketRef.current = null;
     };
-  }, [user, selectedChatDriver?.id]);
+  }, [user]);
 
   useEffect(() => {
     if (callStatus !== "accepted" && callStatus !== "active") return;

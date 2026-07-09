@@ -22,6 +22,9 @@ function App() {
   const activeCallIdRef = useRef(null);
   const ringtoneTimerRef = useRef(null);
   const audioContextRef = useRef(null);
+  const processedOfferKeysRef = useRef(new Set());
+  const processedAnswerKeysRef = useRef(new Set());
+  const isCreatingOfferRef = useRef(false);
 
   const [phone, setPhone] = useState("07722222222");
   const [password, setPassword] = useState("123456");
@@ -140,6 +143,9 @@ function App() {
     stopRingtone();
     closeCallMedia();
     activeCallIdRef.current = null;
+    processedOfferKeysRef.current.clear();
+    processedAnswerKeysRef.current.clear();
+    isCreatingOfferRef.current = false;
     setIncomingCall(null);
     setOutgoingCall(null);
     setCallStatus("");
@@ -179,6 +185,13 @@ function App() {
   const createPeerConnection = (otherUserId, callId) => {
     const socket = chatSocketRef.current;
 
+    if (peerConnectionRef.current) {
+      try {
+        peerConnectionRef.current.close();
+      } catch (_) {}
+      peerConnectionRef.current = null;
+    }
+
     const pc = new RTCPeerConnection({
       iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
     });
@@ -202,6 +215,12 @@ function App() {
       if (remoteMediaRef.current) {
         remoteMediaRef.current.srcObject = remoteStream;
         remoteMediaRef.current.play?.().catch(() => {});
+      }
+    };
+
+    pc.onconnectionstatechange = () => {
+      if (["failed", "closed", "disconnected"].includes(pc.connectionState)) {
+        console.warn("WebRTC connection state:", pc.connectionState);
       }
     };
 
@@ -340,7 +359,16 @@ function App() {
 
     socket.on("call:accepted", async (payload) => {
       try {
-        if (payload.callId && activeCallIdRef.current && payload.callId !== activeCallIdRef.current) {
+        if (
+          payload.callId &&
+          activeCallIdRef.current &&
+          payload.callId !== activeCallIdRef.current
+        ) {
+          return;
+        }
+
+        if (isCreatingOfferRef.current) {
+          console.warn("Ignoring duplicate call:accepted while creating offer");
           return;
         }
 
@@ -353,6 +381,11 @@ function App() {
         const callType = currentCall?.callType || activeCallType || payload.callType || "audio";
         const otherUserId = payload.acceptedById;
 
+        if (!otherUserId) {
+          throw new Error("لم يتم تحديد الطرف الآخر للمكالمة");
+        }
+
+        isCreatingOfferRef.current = true;
         setActiveCallType(callType);
 
         const stream = await navigator.mediaDevices.getUserMedia({
@@ -364,6 +397,7 @@ function App() {
 
         if (localVideoRef.current && callType === "video") {
           localVideoRef.current.srcObject = stream;
+          localVideoRef.current.play?.().catch(() => {});
         }
 
         const pc = createPeerConnection(otherUserId, payload.callId);
@@ -385,6 +419,8 @@ function App() {
         notifyOtherSideCallEnded();
         resetCallState("تم إنهاء المكالمة");
         setError("تعذر تشغيل المايك أو الكاميرا: " + err.message);
+      } finally {
+        isCreatingOfferRef.current = false;
       }
     });
 
@@ -394,6 +430,72 @@ function App() {
       }
 
       resetCallState(`تم رفض المكالمة من ${payload.rejectedByName || "الإدارة"}`);
+    });
+
+    socket.on("webrtc:offer", async (payload) => {
+      try {
+        if (
+          payload.callId &&
+          activeCallIdRef.current &&
+          payload.callId !== activeCallIdRef.current
+        ) {
+          return;
+        }
+
+        const offerKey = `${payload.callId}:${payload.senderId}`;
+        if (processedOfferKeysRef.current.has(offerKey)) {
+          console.warn("Ignoring duplicate WebRTC offer:", offerKey);
+          return;
+        }
+
+        processedOfferKeysRef.current.add(offerKey);
+        stopRingtone();
+        activeCallIdRef.current = payload.callId;
+
+        const callType = payload.callType || incomingCall?.callType || activeCallType || "audio";
+        setActiveCallType(callType);
+
+        const stream = await navigator.mediaDevices.getUserMedia({
+          audio: true,
+          video: callType === "video",
+        });
+
+        localStreamRef.current = stream;
+
+        if (localVideoRef.current && callType === "video") {
+          localVideoRef.current.srcObject = stream;
+          localVideoRef.current.play?.().catch(() => {});
+        }
+
+        const pc = createPeerConnection(payload.senderId, payload.callId);
+
+        stream.getTracks().forEach((track) => {
+          pc.addTrack(track, stream);
+        });
+
+        await pc.setRemoteDescription(new RTCSessionDescription(payload.offer));
+
+        for (const candidate of pendingIceCandidatesRef.current) {
+          await pc.addIceCandidate(candidate);
+        }
+
+        pendingIceCandidatesRef.current = [];
+
+        const answer = await pc.createAnswer();
+        await pc.setLocalDescription(answer);
+
+        socket.emit("webrtc:answer", {
+          receiverId: payload.senderId,
+          callId: payload.callId,
+          answer,
+        });
+
+        setCallStatus("active");
+      } catch (err) {
+        notifyOtherSideCallEnded();
+        resetCallState("تم إنهاء المكالمة");
+        setError("تعذر تشغيل المايك أو الكاميرا: " + err.message);
+      }
     });
 
     socket.on("webrtc:answer", async (payload) => {
@@ -409,12 +511,15 @@ function App() {
         const pc = peerConnectionRef.current;
         if (!pc) return;
 
-        // مهم جدًا: أحيانًا يوصل answer مرتين أو متأخر.
-        // إذا حالة الاتصال ليست have-local-offer، نتجاهله حتى لا يظهر خطأ:
-        // Failed to set remote answer SDP: Called in wrong state: stable
+        const answerKey = `${payload.callId}:${payload.senderId || "unknown"}`;
+        if (processedAnswerKeysRef.current.has(answerKey)) {
+          console.warn("Ignoring duplicate WebRTC answer:", answerKey);
+          return;
+        }
+
         if (pc.signalingState !== "have-local-offer") {
           console.warn(
-            "Ignoring duplicate/late WebRTC answer. Current state:",
+            "Ignoring late WebRTC answer. Current state:",
             pc.signalingState
           );
           return;
@@ -423,6 +528,8 @@ function App() {
         await pc.setRemoteDescription(
           new RTCSessionDescription(payload.answer)
         );
+
+        processedAnswerKeysRef.current.add(answerKey);
 
         for (const candidate of pendingIceCandidatesRef.current) {
           await pc.addIceCandidate(candidate);

@@ -29,15 +29,9 @@ const getUsers = async (req, res) => {
       },
     });
 
-    res.json({
-      success: true,
-      users,
-    });
+    res.json({ success: true, users });
   } catch (error) {
-    res.status(500).json({
-      success: false,
-      message: error.message,
-    });
+    res.status(500).json({ success: false, message: error.message });
   }
 };
 
@@ -61,9 +55,7 @@ const createUser = async (req, res) => {
       });
     }
 
-    const exists = await prisma.user.findUnique({
-      where: { phone },
-    });
+    const exists = await prisma.user.findUnique({ where: { phone } });
 
     if (exists) {
       return res.status(400).json({
@@ -81,6 +73,13 @@ const createUser = async (req, res) => {
         password: hashedPassword,
         role,
         isActive: true,
+        ...(role === "DRIVER"
+          ? {
+              driverProfile: {
+                create: {},
+              },
+            }
+          : {}),
       },
       select: {
         id: true,
@@ -98,10 +97,7 @@ const createUser = async (req, res) => {
       user,
     });
   } catch (error) {
-    res.status(500).json({
-      success: false,
-      message: error.message,
-    });
+    res.status(500).json({ success: false, message: error.message });
   }
 };
 
@@ -139,9 +135,7 @@ const toggleUserStatus = async (req, res) => {
 
     const updatedUser = await prisma.user.update({
       where: { id },
-      data: {
-        isActive: !user.isActive,
-      },
+      data: { isActive: !user.isActive },
       select: {
         id: true,
         name: true,
@@ -160,10 +154,7 @@ const toggleUserStatus = async (req, res) => {
       user: updatedUser,
     });
   } catch (error) {
-    res.status(500).json({
-      success: false,
-      message: error.message,
-    });
+    res.status(500).json({ success: false, message: error.message });
   }
 };
 
@@ -192,9 +183,7 @@ const resetUserPassword = async (req, res) => {
 
     const user = await prisma.user.update({
       where: { id },
-      data: {
-        password: hashedPassword,
-      },
+      data: { password: hashedPassword },
       select: {
         id: true,
         name: true,
@@ -210,10 +199,7 @@ const resetUserPassword = async (req, res) => {
       user,
     });
   } catch (error) {
-    res.status(500).json({
-      success: false,
-      message: error.message,
-    });
+    res.status(500).json({ success: false, message: error.message });
   }
 };
 

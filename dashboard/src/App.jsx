@@ -1321,14 +1321,38 @@ function App() {
 
     socket.on("webrtc:answer", async (payload) => {
       try {
+        if (
+          payload.callId &&
+          activeCallIdRef.current &&
+          payload.callId !== activeCallIdRef.current
+        ) {
+          return;
+        }
+
         const pc = peerConnectionRef.current;
         if (!pc) return;
-        await pc.setRemoteDescription(new RTCSessionDescription(payload.answer));
+
+        // مهم جدًا: أحيانًا يوصل answer مرتين أو متأخر.
+        // إذا حالة الاتصال ليست have-local-offer، نتجاهله حتى لا يظهر خطأ:
+        // Failed to set remote answer SDP: Called in wrong state: stable
+        if (pc.signalingState !== "have-local-offer") {
+          console.warn(
+            "Ignoring duplicate/late WebRTC answer. Current state:",
+            pc.signalingState
+          );
+          return;
+        }
+
+        await pc.setRemoteDescription(
+          new RTCSessionDescription(payload.answer)
+        );
 
         for (const candidate of pendingIceCandidatesRef.current) {
           await pc.addIceCandidate(candidate);
         }
+
         pendingIceCandidatesRef.current = [];
+        setCallStatus("active");
       } catch (err) {
         setError("فشل إكمال الاتصال: " + err.message);
       }

@@ -3,8 +3,10 @@ import { io } from "socket.io-client";
 import { BackgroundGeolocation } from "@capgo/background-geolocation";
 import "./App.css";
 
-const API_URL = "http://127.0.0.1:5000/api";
-const SOCKET_URL = "http://127.0.0.1:5000";
+const API_URL = "https://routedesk-production.up.railway.app/api";
+const SOCKET_URL = "https://routedesk-production.up.railway.app";
+
+
 function App() {
   const socketRef = useRef(null);
   const chatSocketRef = useRef(null);
@@ -396,14 +398,31 @@ function App() {
 
     socket.on("webrtc:answer", async (payload) => {
       try {
-        if (payload.callId && activeCallIdRef.current && payload.callId !== activeCallIdRef.current) {
+        if (
+          payload.callId &&
+          activeCallIdRef.current &&
+          payload.callId !== activeCallIdRef.current
+        ) {
           return;
         }
 
         const pc = peerConnectionRef.current;
         if (!pc) return;
 
-        await pc.setRemoteDescription(new RTCSessionDescription(payload.answer));
+        // مهم جدًا: أحيانًا يوصل answer مرتين أو متأخر.
+        // إذا حالة الاتصال ليست have-local-offer، نتجاهله حتى لا يظهر خطأ:
+        // Failed to set remote answer SDP: Called in wrong state: stable
+        if (pc.signalingState !== "have-local-offer") {
+          console.warn(
+            "Ignoring duplicate/late WebRTC answer. Current state:",
+            pc.signalingState
+          );
+          return;
+        }
+
+        await pc.setRemoteDescription(
+          new RTCSessionDescription(payload.answer)
+        );
 
         for (const candidate of pendingIceCandidatesRef.current) {
           await pc.addIceCandidate(candidate);
@@ -413,62 +432,6 @@ function App() {
         setCallStatus("active");
       } catch (err) {
         setError("فشل إكمال الاتصال: " + err.message);
-      }
-    });
-
-    socket.on("webrtc:offer", async (payload) => {
-      try {
-        if (payload.callId && activeCallIdRef.current && payload.callId !== activeCallIdRef.current) {
-          return;
-        }
-
-        stopRingtone();
-        activeCallIdRef.current = payload.callId;
-
-        const callType = payload.callType || incomingCall?.callType || activeCallType || "audio";
-        setActiveCallType(callType);
-
-        const stream = await navigator.mediaDevices.getUserMedia({
-          audio: true,
-          video: callType === "video",
-        });
-
-        localStreamRef.current = stream;
-
-        if (localVideoRef.current && callType === "video") {
-          localVideoRef.current.srcObject = stream;
-        }
-
-        const pc = createPeerConnection(payload.senderId, payload.callId);
-
-        stream.getTracks().forEach((track) => {
-          pc.addTrack(track, stream);
-        });
-
-        await pc.setRemoteDescription(
-          new RTCSessionDescription(payload.offer)
-        );
-
-        for (const candidate of pendingIceCandidatesRef.current) {
-          await pc.addIceCandidate(candidate);
-        }
-
-        pendingIceCandidatesRef.current = [];
-
-        const answer = await pc.createAnswer();
-        await pc.setLocalDescription(answer);
-
-        socket.emit("webrtc:answer", {
-          receiverId: payload.senderId,
-          callId: payload.callId,
-          answer,
-        });
-
-        setCallStatus("active");
-      } catch (err) {
-        notifyOtherSideCallEnded();
-        resetCallState("تم إنهاء المكالمة");
-        setError("تعذر تشغيل المايك أو الكاميرا: " + err.message);
       }
     });
 

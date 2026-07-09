@@ -3,8 +3,8 @@ import { io } from "socket.io-client";
 import LiveTrackingMap from "./components/LiveTrackingMap";
 import "./App.css";
 
-const API_URL = "http://localhost:5000/api";
-const SOCKET_URL = "http://localhost:5000";
+const API_URL = "https://routedesk-production.up.railway.app/api";
+const SOCKET_URL = "https://routedesk-production.up.railway.app";
 
 
 

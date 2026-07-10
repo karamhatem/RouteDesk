@@ -1,57 +1,123 @@
 const prisma = require("../lib/prisma");
 
 // ========================================
+// أدوات مساعدة
+// ========================================
+const parsePositiveNumber = (value) => {
+    const number = Number(value);
+    return Number.isFinite(number) && number > 0 ? number : null;
+};
+
+const emitBalanceUpdate = (req, payload) => {
+    const io = req.app.get("io");
+    if (!io) return;
+
+    io.to(`user-${payload.driverId}`).emit("balance:updated", payload);
+    io.to("admin-tracking").emit("balance:updated", payload);
+};
+
+// ========================================
+// السائق الحالي يجلب رصيده من السيرفر
+// لا نعتمد على driverId قادم من التطبيق
+// ========================================
+const getMyBalance = async (req, res) => {
+    try {
+        const driverId = req.user.id;
+
+        const driver = await prisma.user.findUnique({
+            where: { id: driverId },
+            select: {
+                id: true,
+                name: true,
+                phone: true,
+                role: true,
+                isActive: true,
+                driverProfile: {
+                    select: { balance: true }
+                }
+            }
+        });
+
+        if (!driver || driver.role !== "DRIVER") {
+            return res.status(403).json({
+                success: false,
+                message: "Only drivers can access this balance"
+            });
+        }
+
+        if (!driver.isActive) {
+            return res.status(403).json({
+                success: false,
+                message: "Driver account is disabled"
+            });
+        }
+
+        if (!driver.driverProfile) {
+            return res.status(404).json({
+                success: false,
+                message: "Driver profile not found"
+            });
+        }
+
+        return res.json({
+            success: true,
+            driver: {
+                id: driver.id,
+                name: driver.name,
+                phone: driver.phone
+            },
+            balance: Number(driver.driverProfile.balance || 0),
+            syncedAt: new Date().toISOString()
+        });
+    } catch (error) {
+        console.error("Get my balance error:", error.message);
+        return res.status(500).json({
+            success: false,
+            message: error.message
+        });
+    }
+};
+
+// ========================================
 // تسجيل مبلغ استلمه السائق من مكان
 // ========================================
 const createCollection = async (req, res) => {
     try {
         const driverId = req.user.id;
+        const { businessId, amount, note } = req.body;
 
-        const {
-            businessId,
-            amount,
-            note
-        } = req.body;
-
-        const numericAmount = Number(amount);
+        const numericAmount = parsePositiveNumber(amount);
         const numericBusinessId = Number(businessId);
 
-        if (
-            !Number.isInteger(numericBusinessId) ||
-            numericBusinessId <= 0
-        ) {
+        if (!Number.isInteger(numericBusinessId) || numericBusinessId <= 0) {
             return res.status(400).json({
                 success: false,
                 message: "Business is required"
             });
         }
 
-        if (
-            !Number.isFinite(numericAmount) ||
-            numericAmount <= 0
-        ) {
+        if (numericAmount === null) {
             return res.status(400).json({
                 success: false,
                 message: "Amount must be greater than zero"
             });
         }
 
-        const driver = await prisma.user.findUnique({
-            where: {
-                id: driverId
-            },
-            select: {
-                id: true,
-                role: true,
-                isActive: true,
-
-                driverProfile: {
-                    select: {
-                        id: true
-                    }
+        const [driver, business] = await Promise.all([
+            prisma.user.findUnique({
+                where: { id: driverId },
+                select: {
+                    id: true,
+                    role: true,
+                    isActive: true,
+                    driverProfile: { select: { id: true } }
                 }
-            }
-        });
+            }),
+            prisma.business.findUnique({
+                where: { id: numericBusinessId },
+                select: { id: true, isActive: true }
+            })
+        ]);
 
         if (!driver || driver.role !== "DRIVER") {
             return res.status(403).json({
@@ -74,16 +140,6 @@ const createCollection = async (req, res) => {
             });
         }
 
-        const business = await prisma.business.findUnique({
-            where: {
-                id: numericBusinessId
-            },
-            select: {
-                id: true,
-                isActive: true
-            }
-        });
-
         if (!business || !business.isActive) {
             return res.status(404).json({
                 success: false,
@@ -91,173 +147,116 @@ const createCollection = async (req, res) => {
             });
         }
 
-        const result = await prisma.$transaction(
-            async (tx) => {
-
-                const transaction =
-                    await tx.transaction.create({
-                        data: {
-                            type: "COLLECTION",
-                            amount: numericAmount,
-                            note: note || null,
-
-                            driverId: driverId,
-                            businessId: numericBusinessId,
-
-                            // السائق نفسه سجل عملية القبض
-                            recordedBy: driverId
-                        },
-
-                        select: {
-                            id: true,
-                            type: true,
-                            amount: true,
-                            note: true,
-                            createdAt: true,
-
-                            business: {
-                                select: {
-                                    id: true,
-                                    name: true,
-                                    type: true
-                                }
-                            },
-
-                            driver: {
-                                select: {
-                                    id: true,
-                                    name: true,
-                                    phone: true
-                                }
-                            },
-
-                            recorder: {
-                                select: {
-                                    id: true,
-                                    name: true,
-                                    role: true
-                                }
-                            }
-                        }
-                    });
-
-                const profile =
-                    await tx.driverProfile.update({
-                        where: {
-                            userId: driverId
-                        },
-
-                        data: {
-                            balance: {
-                                increment: numericAmount
-                            }
-                        }
-                    });
-
-                return {
-                    transaction,
-                    balance: profile.balance
-                };
-            }
-        );
-
-        const io = req.app.get("io");
-
-        if (io) {
-            io.to(`user-${driverId}`).emit("balance:updated", {
-                driverId,
-                balance: result.balance,
-                type: "COLLECTION",
-                transaction: result.transaction
+        const result = await prisma.$transaction(async (tx) => {
+            const transaction = await tx.transaction.create({
+                data: {
+                    type: "COLLECTION",
+                    amount: numericAmount,
+                    note: note?.trim() || null,
+                    driverId,
+                    businessId: numericBusinessId,
+                    recordedBy: driverId
+                },
+                select: {
+                    id: true,
+                    type: true,
+                    amount: true,
+                    note: true,
+                    createdAt: true,
+                    business: {
+                        select: { id: true, name: true, type: true }
+                    },
+                    driver: {
+                        select: { id: true, name: true, phone: true }
+                    },
+                    recorder: {
+                        select: { id: true, name: true, role: true }
+                    }
+                }
             });
 
-            io.to("admin-tracking").emit("balance:updated", {
-                driverId,
-                balance: result.balance,
-                type: "COLLECTION",
-                transaction: result.transaction
+            const profile = await tx.driverProfile.update({
+                where: { userId: driverId },
+                data: {
+                    balance: { increment: numericAmount }
+                },
+                select: { balance: true }
             });
-        }
 
-        res.status(201).json({
+            return {
+                transaction,
+                balance: Number(profile.balance || 0)
+            };
+        });
+
+        emitBalanceUpdate(req, {
+            driverId,
+            balance: result.balance,
+            type: "COLLECTION",
+            transaction: result.transaction
+        });
+
+        return res.status(201).json({
             success: true,
             message: "Collection recorded successfully",
             transaction: result.transaction,
             currentBalance: result.balance
         });
-
     } catch (error) {
-        console.error(
-            "Create collection error:",
-            error.message
-        );
-
-        res.status(500).json({
+        console.error("Create collection error:", error.message);
+        return res.status(500).json({
             success: false,
             message: error.message
         });
     }
 };
 
-
 // ========================================
 // تسجيل تسوية من المدير أو المحاسب
+// التحقق والخصم داخل Transaction واحدة لمنع الرصيد السالب
 // ========================================
 const createSettlement = async (req, res) => {
     try {
         const recorderId = req.user.id;
-
-        const {
-            driverId,
-            amount,
-            note
-        } = req.body;
+        const { driverId, amount, note } = req.body;
 
         const numericDriverId = Number(driverId);
-        const numericAmount = Number(amount);
+        const numericAmount = parsePositiveNumber(amount);
 
-        if (
-            !Number.isInteger(numericDriverId) ||
-            numericDriverId <= 0
-        ) {
+        if (!Number.isInteger(numericDriverId) || numericDriverId <= 0) {
             return res.status(400).json({
                 success: false,
                 message: "Driver is required"
             });
         }
 
-        if (
-            !Number.isFinite(numericAmount) ||
-            numericAmount <= 0
-        ) {
+        if (numericAmount === null) {
             return res.status(400).json({
                 success: false,
                 message: "Amount must be greater than zero"
             });
         }
 
-        const recorder = await prisma.user.findUnique({
-            where: {
-                id: recorderId
-            },
+        const [recorder, driver] = await Promise.all([
+            prisma.user.findUnique({
+                where: { id: recorderId },
+                select: { id: true, role: true, isActive: true }
+            }),
+            prisma.user.findUnique({
+                where: { id: numericDriverId },
+                select: {
+                    id: true,
+                    role: true,
+                    isActive: true,
+                    driverProfile: { select: { balance: true } }
+                }
+            })
+        ]);
 
-            select: {
-                id: true,
-                role: true,
-                isActive: true
-            }
-        });
-
-        if (
-            !recorder ||
-            !["ADMIN", "ACCOUNTANT"].includes(
-                recorder.role
-            )
-        ) {
+        if (!recorder || !["ADMIN", "ACCOUNTANT"].includes(recorder.role)) {
             return res.status(403).json({
                 success: false,
-                message:
-                    "Only admin or accountant can create settlements"
+                message: "Only admin or accountant can create settlements"
             });
         }
 
@@ -268,29 +267,7 @@ const createSettlement = async (req, res) => {
             });
         }
 
-        const driver = await prisma.user.findUnique({
-            where: {
-                id: numericDriverId
-            },
-
-            select: {
-                id: true,
-                role: true,
-                isActive: true,
-
-                driverProfile: {
-                    select: {
-                        balance: true
-                    }
-                }
-            }
-        });
-
-        if (
-            !driver ||
-            driver.role !== "DRIVER" ||
-            !driver.driverProfile
-        ) {
+        if (!driver || driver.role !== "DRIVER" || !driver.driverProfile) {
             return res.status(404).json({
                 success: false,
                 message: "Driver not found"
@@ -304,327 +281,214 @@ const createSettlement = async (req, res) => {
             });
         }
 
-        if (
-            numericAmount >
-            driver.driverProfile.balance
-        ) {
-            return res.status(400).json({
-                success: false,
-                message:
-                    "Settlement amount cannot exceed driver balance"
-            });
-        }
-
-        const result = await prisma.$transaction(
-            async (tx) => {
-
-                const transaction =
-                    await tx.transaction.create({
-                        data: {
-                            type: "SETTLEMENT",
-                            amount: numericAmount,
-                            note: note || null,
-
-                            driverId: numericDriverId,
-                            businessId: null,
-                            recordedBy: recorderId
-                        },
-
-                        select: {
-                            id: true,
-                            type: true,
-                            amount: true,
-                            note: true,
-                            createdAt: true,
-
-                            driver: {
-                                select: {
-                                    id: true,
-                                    name: true,
-                                    phone: true
-                                }
-                            },
-
-                            recorder: {
-                                select: {
-                                    id: true,
-                                    name: true,
-                                    role: true
-                                }
-                            }
-                        }
-                    });
-
-                const profile =
-                    await tx.driverProfile.update({
-                        where: {
-                            userId: numericDriverId
-                        },
-
-                        data: {
-                            balance: {
-                                decrement: numericAmount
-                            }
-                        }
-                    });
-
-                return {
-                    transaction,
-                    balance: profile.balance
-                };
-            }
-        );
-
-        const io = req.app.get("io");
-
-        if (io) {
-            io.to(`user-${numericDriverId}`).emit("balance:updated", {
-                driverId: numericDriverId,
-                balance: result.balance,
-                type: "SETTLEMENT",
-                transaction: result.transaction
-            });
-
-            io.to("admin-tracking").emit("balance:updated", {
-                driverId: numericDriverId,
-                balance: result.balance,
-                type: "SETTLEMENT",
-                transaction: result.transaction
-            });
-        }
-
-        res.status(201).json({
-            success: true,
-            message: "Settlement recorded successfully",
-            transaction: result.transaction,
-            currentBalance: result.balance
-        });
-
-    } catch (error) {
-        console.error(
-            "Create settlement error:",
-            error.message
-        );
-
-        res.status(500).json({
-            success: false,
-            message: error.message
-        });
-    }
-};
-
-
-// ========================================
-// عرض رصيد سائق
-// ========================================
-const getDriverBalance = async (req, res) => {
-    try {
-        const driverId = Number(
-            req.params.driverId
-        );
-
-        if (
-            !Number.isInteger(driverId) ||
-            driverId <= 0
-        ) {
-            return res.status(400).json({
-                success: false,
-                message: "Invalid driver id"
-            });
-        }
-
-        const driver = await prisma.user.findUnique({
-            where: {
-                id: driverId
-            },
-
-            select: {
-                id: true,
-                name: true,
-                phone: true,
-                role: true,
-
-                driverProfile: {
-                    select: {
-                        balance: true
-                    }
+        const result = await prisma.$transaction(async (tx) => {
+            // خصم ذري: لا يتم إذا كان الرصيد أقل من مبلغ التسوية.
+            const updated = await tx.driverProfile.updateMany({
+                where: {
+                    userId: numericDriverId,
+                    balance: { gte: numericAmount }
+                },
+                data: {
+                    balance: { decrement: numericAmount }
                 }
+            });
+
+            if (updated.count !== 1) {
+                const insufficientError = new Error(
+                    "Settlement amount cannot exceed driver balance"
+                );
+                insufficientError.code = "INSUFFICIENT_BALANCE";
+                throw insufficientError;
             }
-        });
 
-        if (
-            !driver ||
-            driver.role !== "DRIVER" ||
-            !driver.driverProfile
-        ) {
-            return res.status(404).json({
-                success: false,
-                message: "Driver not found"
-            });
-        }
-
-        res.json({
-            success: true,
-
-            driver: {
-                id: driver.id,
-                name: driver.name,
-                phone: driver.phone
-            },
-
-            balance:
-                driver.driverProfile.balance
-        });
-
-    } catch (error) {
-        console.error(
-            "Get driver balance error:",
-            error.message
-        );
-
-        res.status(500).json({
-            success: false,
-            message: error.message
-        });
-    }
-};
-
-
-// ========================================
-// عرض سجل الحركات المالية لسائق
-// Pagination
-// ========================================
-const getDriverTransactions = async (
-    req,
-    res
-) => {
-    try {
-        const driverId = Number(
-            req.params.driverId
-        );
-
-        const page = Math.max(
-            Number(req.query.page) || 1,
-            1
-        );
-
-        const limit = Math.min(
-            Math.max(
-                Number(req.query.limit) || 20,
-                1
-            ),
-            100
-        );
-
-        const skip = (page - 1) * limit;
-
-        if (
-            !Number.isInteger(driverId) ||
-            driverId <= 0
-        ) {
-            return res.status(400).json({
-                success: false,
-                message: "Invalid driver id"
-            });
-        }
-
-        const driver = await prisma.user.findUnique({
-            where: {
-                id: driverId
-            },
-
-            select: {
-                id: true,
-                role: true
-            }
-        });
-
-        if (
-            !driver ||
-            driver.role !== "DRIVER"
-        ) {
-            return res.status(404).json({
-                success: false,
-                message: "Driver not found"
-            });
-        }
-
-        const where = {
-            driverId: driverId
-        };
-
-        const [
-            transactions,
-            total
-        ] = await Promise.all([
-
-            prisma.transaction.findMany({
-                where,
-
+            const transaction = await tx.transaction.create({
+                data: {
+                    type: "SETTLEMENT",
+                    amount: numericAmount,
+                    note: note?.trim() || null,
+                    driverId: numericDriverId,
+                    businessId: null,
+                    recordedBy: recorderId
+                },
                 select: {
                     id: true,
                     type: true,
                     amount: true,
                     note: true,
                     createdAt: true,
-
-                    business: {
-                        select: {
-                            id: true,
-                            name: true,
-                            type: true
-                        }
+                    driver: {
+                        select: { id: true, name: true, phone: true }
                     },
-
                     recorder: {
-                        select: {
-                            id: true,
-                            name: true,
-                            role: true
-                        }
+                        select: { id: true, name: true, role: true }
                     }
-                },
+                }
+            });
 
-                orderBy: {
-                    createdAt: "desc"
-                },
+            const profile = await tx.driverProfile.findUnique({
+                where: { userId: numericDriverId },
+                select: { balance: true }
+            });
 
-                skip,
-                take: limit
-            }),
-
-            prisma.transaction.count({
-                where
-            })
-        ]);
-
-        res.json({
-            success: true,
-            page,
-            limit,
-            total,
-
-            totalPages:
-                Math.ceil(total / limit),
-
-            transactions
+            return {
+                transaction,
+                balance: Number(profile?.balance || 0)
+            };
         });
 
-    } catch (error) {
-        console.error(
-            "Get driver transactions error:",
-            error.message
-        );
+        emitBalanceUpdate(req, {
+            driverId: numericDriverId,
+            balance: result.balance,
+            type: "SETTLEMENT",
+            transaction: result.transaction
+        });
 
-        res.status(500).json({
+        return res.status(201).json({
+            success: true,
+            message: "Settlement recorded successfully",
+            transaction: result.transaction,
+            currentBalance: result.balance
+        });
+    } catch (error) {
+        console.error("Create settlement error:", error.message);
+
+        if (error.code === "INSUFFICIENT_BALANCE") {
+            return res.status(400).json({
+                success: false,
+                message: error.message
+            });
+        }
+
+        return res.status(500).json({
             success: false,
             message: error.message
         });
     }
 };
 
+// ========================================
+// عرض رصيد سائق للإدارة أو المحاسب
+// ========================================
+const getDriverBalance = async (req, res) => {
+    try {
+        const driverId = Number(req.params.driverId);
+
+        if (!Number.isInteger(driverId) || driverId <= 0) {
+            return res.status(400).json({
+                success: false,
+                message: "Invalid driver id"
+            });
+        }
+
+        const driver = await prisma.user.findUnique({
+            where: { id: driverId },
+            select: {
+                id: true,
+                name: true,
+                phone: true,
+                role: true,
+                driverProfile: { select: { balance: true } }
+            }
+        });
+
+        if (!driver || driver.role !== "DRIVER" || !driver.driverProfile) {
+            return res.status(404).json({
+                success: false,
+                message: "Driver not found"
+            });
+        }
+
+        return res.json({
+            success: true,
+            driver: {
+                id: driver.id,
+                name: driver.name,
+                phone: driver.phone
+            },
+            balance: Number(driver.driverProfile.balance || 0),
+            syncedAt: new Date().toISOString()
+        });
+    } catch (error) {
+        console.error("Get driver balance error:", error.message);
+        return res.status(500).json({
+            success: false,
+            message: error.message
+        });
+    }
+};
+
+// ========================================
+// عرض سجل الحركات المالية لسائق
+// ========================================
+const getDriverTransactions = async (req, res) => {
+    try {
+        const driverId = Number(req.params.driverId);
+        const page = Math.max(Number(req.query.page) || 1, 1);
+        const limit = Math.min(Math.max(Number(req.query.limit) || 20, 1), 100);
+        const skip = (page - 1) * limit;
+
+        if (!Number.isInteger(driverId) || driverId <= 0) {
+            return res.status(400).json({
+                success: false,
+                message: "Invalid driver id"
+            });
+        }
+
+        const driver = await prisma.user.findUnique({
+            where: { id: driverId },
+            select: { id: true, role: true }
+        });
+
+        if (!driver || driver.role !== "DRIVER") {
+            return res.status(404).json({
+                success: false,
+                message: "Driver not found"
+            });
+        }
+
+        const where = { driverId };
+        const [transactions, total] = await Promise.all([
+            prisma.transaction.findMany({
+                where,
+                select: {
+                    id: true,
+                    type: true,
+                    amount: true,
+                    note: true,
+                    createdAt: true,
+                    business: {
+                        select: { id: true, name: true, type: true }
+                    },
+                    recorder: {
+                        select: { id: true, name: true, role: true }
+                    }
+                },
+                orderBy: { createdAt: "desc" },
+                skip,
+                take: limit
+            }),
+            prisma.transaction.count({ where })
+        ]);
+
+        return res.json({
+            success: true,
+            page,
+            limit,
+            total,
+            totalPages: Math.ceil(total / limit),
+            transactions
+        });
+    } catch (error) {
+        console.error("Get driver transactions error:", error.message);
+        return res.status(500).json({
+            success: false,
+            message: error.message
+        });
+    }
+};
 
 module.exports = {
+    getMyBalance,
     createCollection,
     createSettlement,
     getDriverBalance,

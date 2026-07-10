@@ -228,31 +228,30 @@ function App() {
     return pc;
   };
 
-  const loadCurrentBalance = async () => {
+  const loadCurrentBalance = async ({ silent = true } = {}) => {
     try {
       const token = getToken();
-      const savedUser =
-        user ||
-        (localStorage.getItem("driverUser")
-          ? JSON.parse(localStorage.getItem("driverUser"))
-          : null);
+      if (!token) return;
 
-      if (!token || !savedUser?.id) return;
-
-      const response = await fetch(
-        `${API_URL}/transactions/driver/${savedUser.id}/balance`,
-        {
-          headers: { Authorization: `Bearer ${token}` },
-        }
-      );
+      const response = await fetch(`${API_URL}/transactions/me/balance`, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Cache-Control": "no-cache",
+        },
+      });
 
       const result = await response.json();
 
-      if (response.ok && result.success) {
-        setCurrentBalance(Number(result.balance || 0));
+      if (!response.ok || !result.success) {
+        throw new Error(result.message || "فشل تحديث الرصيد");
       }
+
+      setCurrentBalance(Number(result.balance || 0));
     } catch (err) {
       console.warn("Load balance error:", err.message);
+      if (!silent) {
+        setError(err.message || "فشل تحديث الرصيد");
+      }
     }
   };
 
@@ -267,6 +266,11 @@ function App() {
     const socket = io(SOCKET_URL, {
       auth: { token },
       transports: ["websocket", "polling"],
+    });
+
+    socket.on("connect", () => {
+      // Socket للتحديث اللحظي، لكن API يبقى المصدر النهائي للرصيد.
+      loadCurrentBalance();
     });
 
     socket.on("chat:new-message", (message) => {
@@ -656,8 +660,36 @@ function App() {
       connectChatSocket();
       loadAvailableBusinesses();
       loadDriverChat();
-      loadCurrentBalance();
+      loadCurrentBalance({ silent: false });
     }
+  }, [user]);
+
+  useEffect(() => {
+    if (!user) return;
+
+    const refreshBalance = () => {
+      if (document.visibilityState === "visible") {
+        loadCurrentBalance();
+      }
+    };
+
+    const handleFocus = () => loadCurrentBalance();
+
+    document.addEventListener("visibilitychange", refreshBalance);
+    window.addEventListener("focus", handleFocus);
+
+    // حماية إضافية إذا بقي التطبيق مفتوحًا لساعات.
+    const intervalId = window.setInterval(() => {
+      if (document.visibilityState === "visible") {
+        loadCurrentBalance();
+      }
+    }, 60_000);
+
+    return () => {
+      document.removeEventListener("visibilitychange", refreshBalance);
+      window.removeEventListener("focus", handleFocus);
+      window.clearInterval(intervalId);
+    };
   }, [user]);
 
   const connectSocket = () => {
@@ -1092,6 +1124,7 @@ function App() {
     if (tracking) await stopTracking();
     localStorage.removeItem("driverToken");
     localStorage.removeItem("driverUser");
+    setCurrentBalance(null);
     setUser(null);
     setDriverView("home");
   };

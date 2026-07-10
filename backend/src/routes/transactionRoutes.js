@@ -11,11 +11,16 @@ const {
     getDriverTransactions
 } = require("../controllers/transactionController");
 
+
 // ========================================
-// مدير أو محاسب
+// مدير أو محاسب فقط
 // ========================================
+
 const adminOrAccountant = (req, res, next) => {
-    if (req.user && ["ADMIN", "ACCOUNTANT"].includes(req.user.role)) {
+    if (
+        req.user &&
+        ["ADMIN", "ACCOUNTANT"].includes(req.user.role)
+    ) {
         return next();
     }
 
@@ -25,28 +30,34 @@ const adminOrAccountant = (req, res, next) => {
     });
 };
 
+
 // ========================================
-// السائق الحالي يجلب رصيده الحقيقي من السيرفر
-// يجب أن يكون قبل /driver/:driverId
+// السائق الحالي يجلب رصيده بنفسه
+// مهم: يجب أن يكون قبل /driver/:driverId
 // ========================================
+
 router.get(
     "/me/balance",
     auth,
     getMyBalance
 );
 
+
 // ========================================
 // السائق يسجل مبلغ استلمه من مكان
 // ========================================
+
 router.post(
     "/collection",
     auth,
     createCollection
 );
 
+
 // ========================================
-// المدير أو المحاسب يسجل تسوية مع السائق
+// المدير أو المحاسب يسجل تسوية
 // ========================================
+
 router.post(
     "/settlement",
     auth,
@@ -54,9 +65,11 @@ router.post(
     createSettlement
 );
 
+
 // ========================================
 // المدير أو المحاسب يعرض رصيد سائق
 // ========================================
+
 router.get(
     "/driver/:driverId/balance",
     auth,
@@ -64,14 +77,17 @@ router.get(
     getDriverBalance
 );
 
+
 // ========================================
-// المدير أو المحاسب يعرض سجل حركات سائق
+// المدير أو المحاسب يعرض سجل حركات السائق
 // ========================================
+
 router.get(
     "/driver/:driverId",
     auth,
     adminOrAccountant,
     getDriverTransactions
 );
+
 
 module.exports = router;

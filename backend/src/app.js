@@ -2,6 +2,8 @@ console.log("🔥 APP LOADED");
 
 const express = require("express");
 const cors = require("cors");
+const helmet = require("helmet");
+const rateLimit = require("express-rate-limit");
 
 const messageRoutes = require("./routes/messageRoutes");
 const driverRoutes = require("./routes/driverRoutes");
@@ -15,6 +17,46 @@ const trackingRoutes = require("./routes/trackingRoutes");
 const dashboardRoutes = require("./routes/dashboardRoutes");
 
 const app = express();
+
+
+// ========================================
+// Helmet: يضيف ترويسات أمان قياسية
+// (يمنع أنواع هجمات معروفة مثل clickjacking، sniffing)
+// ========================================
+
+app.use(
+    helmet({
+        // معطل لأن التطبيق مش موقع HTML يعرض صور/سكربتات من مصادر خارجية،
+        // وتفعيله الافتراضي يكسر بعض تطبيقات الموبايل/الـAPI أحياناً
+        contentSecurityPolicy: false,
+        crossOriginResourcePolicy: { policy: "cross-origin" }
+    })
+);
+
+
+// ========================================
+// حد أقصى للمحاولات: يمنع تخمين كلمات السر
+// (Brute Force Protection)
+// ========================================
+
+const loginLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000, // 15 دقيقة
+    max: 10, // 10 محاولات كحد أقصى بنفس الـ15 دقيقة لكل IP
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: {
+        success: false,
+        message: "محاولات دخول كثيرة جداً. حاول مرة ثانية بعد 15 دقيقة"
+    }
+});
+
+// حد أعم لباقي الـAPI، يحمي من إغراق السيرفر بطلبات آلية
+const generalLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 600, // 600 طلب لكل IP كل 15 دقيقة (سخي بما يكفي للاستخدام الطبيعي)
+    standardHeaders: true,
+    legacyHeaders: false
+});
 
 
 // ========================================
@@ -47,6 +89,9 @@ app.use(
 // ========================================
 
 app.use(express.json());
+
+app.use("/api", generalLimiter);
+app.use("/api/auth/login", loginLimiter);
 
 
 // ========================================

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { io } from "socket.io-client";
+import { CapacitorHttp, Capacitor } from "@capacitor/core";
 import LiveTrackingMap from "./components/LiveTrackingMap";
 import "./App.css";
 
@@ -7,8 +8,58 @@ const API_URL = "https://routedesk-production.up.railway.app/api";
 const SOCKET_URL = "https://routedesk-production.up.railway.app";
 
 // ========================================
-// إعدادات WebRTC
+// طلبات HTTP موحدة (نفس حل تطبيق السائق)
 // ========================================
+const apiRequest = async (path, { method = "GET", headers = {}, body } = {}) => {
+  const url = path.startsWith("http") ? path : `${API_URL}${path}`;
+
+  if (Capacitor.isNativePlatform()) {
+    const response = await CapacitorHttp.request({
+      url,
+      method,
+      headers,
+      data: body,
+    });
+
+    return {
+      ok: response.status >= 200 && response.status < 300,
+      status: response.status,
+      json: async () => response.data,
+    };
+  }
+
+  const response = await fetch(url, {
+    method,
+    headers,
+    body: body !== undefined ? JSON.stringify(body) : undefined,
+  });
+
+  return response;
+};
+
+// ========================================
+// لون ثابت مميز لكل سائق حسب اسمه
+// (نفس الاسم = نفس اللون دائماً)
+// ========================================
+const AVATAR_PALETTE = [
+  "#3168e8", // أزرق (أساسي)
+  "#168a55", // أخضر
+  "#b76a08", // برتقالي
+  "#7c3aed", // بنفسجي
+  "#c43e4d", // أحمر
+  "#0891b2", // فيروزي
+  "#be185d", // وردي غامق
+  "#65a30d", // أخضر ليموني
+];
+
+const getAvatarColor = (name) => {
+  if (!name) return AVATAR_PALETTE[0];
+  let hash = 0;
+  for (let i = 0; i < name.length; i++) {
+    hash = name.charCodeAt(i) + ((hash << 5) - hash);
+  }
+  return AVATAR_PALETTE[Math.abs(hash) % AVATAR_PALETTE.length];
+};
 // نفس بيانات TURN المستخدمة بتطبيق السائق - لازم تكون متطابقة
 // بين الطرفين (الإدارة والسائق) عشان المكالمة تشتغل من الجهتين.
 const ICE_SERVERS = [
@@ -58,6 +109,8 @@ function App() {
   const [data, setData] = useState(null);
   const [driverDetails, setDriverDetails] = useState(null);
   const [view, setView] = useState("dashboard");
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  const [moreMenuOpen, setMoreMenuOpen] = useState(false);
 
   const [user, setUser] = useState(null);
   const [phone, setPhone] = useState("07700000000");
@@ -151,7 +204,7 @@ function App() {
         return;
       }
 
-      const response = await fetch(`${API_URL}/dashboard/summary`, {
+      const response = await apiRequest(`/dashboard/summary`, {
         headers: { Authorization: `Bearer ${currentToken}` },
       });
 
@@ -180,7 +233,7 @@ function App() {
       setLoading(true);
       setError("");
 
-      const response = await fetch(`${API_URL}/dashboard/drivers/${driverId}`, {
+      const response = await apiRequest(`/dashboard/drivers/${driverId}`, {
         headers: { Authorization: `Bearer ${localStorage.getItem("token")}` },
       });
 
@@ -205,7 +258,7 @@ function App() {
       setError("");
 
       const currentToken = localStorage.getItem("token");
-      const response = await fetch(`${API_URL}/businesses?limit=100`, {
+      const response = await apiRequest(`/businesses?limit=100`, {
         headers: { Authorization: `Bearer ${currentToken}` },
       });
 
@@ -238,13 +291,13 @@ function App() {
       setError("");
 
       const currentToken = localStorage.getItem("token");
-      const response = await fetch(`${API_URL}/businesses`, {
+      const response = await apiRequest(`/businesses`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
           Authorization: `Bearer ${currentToken}`,
         },
-        body: JSON.stringify(newBusiness),
+        body: newBusiness,
       });
 
       const result = await response.json();
@@ -279,8 +332,8 @@ function App() {
       const action = business.isActive ? "deactivate" : "activate";
       const currentToken = localStorage.getItem("token");
 
-      const response = await fetch(
-        `${API_URL}/businesses/${business.id}/${action}`,
+      const response = await apiRequest(
+        `/businesses/${business.id}/${action}`,
         {
           method: "PATCH",
           headers: { Authorization: `Bearer ${currentToken}` },
@@ -312,7 +365,7 @@ function App() {
       setError("");
 
       const currentToken = localStorage.getItem("token");
-      const response = await fetch(`${API_URL}/drivers?limit=100`, {
+      const response = await apiRequest(`/drivers?limit=100`, {
         headers: { Authorization: `Bearer ${currentToken}` },
       });
 
@@ -346,13 +399,13 @@ function App() {
       setError("");
 
       const currentToken = localStorage.getItem("token");
-      const response = await fetch(`${API_URL}/drivers`, {
+      const response = await apiRequest(`/drivers`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
           Authorization: `Bearer ${currentToken}`,
         },
-        body: JSON.stringify(newDriver),
+        body: newDriver,
       });
 
       const result = await response.json();
@@ -388,8 +441,8 @@ function App() {
       const action = driver.isActive ? "deactivate" : "activate";
       const currentToken = localStorage.getItem("token");
 
-      const response = await fetch(
-        `${API_URL}/drivers/${driver.id}/${action}`,
+      const response = await apiRequest(
+        `/drivers/${driver.id}/${action}`,
         {
           method: "PATCH",
           headers: { Authorization: `Bearer ${currentToken}` },
@@ -425,7 +478,7 @@ function App() {
       setError("");
 
       const currentToken = localStorage.getItem("token");
-      const response = await fetch(`${API_URL}/users`, {
+      const response = await apiRequest(`/users`, {
         headers: {
           Authorization: `Bearer ${currentToken}`,
         },
@@ -463,13 +516,13 @@ function App() {
       setUserMessage("");
 
       const currentToken = localStorage.getItem("token");
-      const response = await fetch(`${API_URL}/users`, {
+      const response = await apiRequest(`/users`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
           Authorization: `Bearer ${currentToken}`,
         },
-        body: JSON.stringify(newSystemUser),
+        body: newSystemUser,
       });
 
       const result = await response.json();
@@ -503,8 +556,8 @@ function App() {
       setUserMessage("");
 
       const currentToken = localStorage.getItem("token");
-      const response = await fetch(
-        `${API_URL}/users/${systemUser.id}/status`,
+      const response = await apiRequest(
+        `/users/${systemUser.id}/status`,
         {
           method: "PATCH",
           headers: {
@@ -546,17 +599,17 @@ function App() {
       setUserMessage("");
 
       const currentToken = localStorage.getItem("token");
-      const response = await fetch(
-        `${API_URL}/users/${userId}/password`,
+      const response = await apiRequest(
+        `/users/${userId}/password`,
         {
           method: "PATCH",
           headers: {
             "Content-Type": "application/json",
             Authorization: `Bearer ${currentToken}`,
           },
-          body: JSON.stringify({
+          body: {
             password: newPassword,
-          }),
+          },
         }
       );
 
@@ -589,7 +642,7 @@ function App() {
       setError("");
 
       const currentToken = localStorage.getItem("token");
-      const response = await fetch(`${API_URL}/reports?limit=100`, {
+      const response = await apiRequest(`/reports?limit=100`, {
         headers: {
           Authorization: `Bearer ${currentToken}`,
         },
@@ -624,10 +677,10 @@ function App() {
       const currentToken = localStorage.getItem("token");
 
       const [balanceResponse, transactionsResponse] = await Promise.all([
-        fetch(`${API_URL}/transactions/driver/${driver.id}/balance`, {
+        apiRequest(`/transactions/driver/${driver.id}/balance`, {
           headers: { Authorization: `Bearer ${currentToken}` },
         }),
-        fetch(`${API_URL}/transactions/driver/${driver.id}`, {
+        apiRequest(`/transactions/driver/${driver.id}`, {
           headers: { Authorization: `Bearer ${currentToken}` },
         }),
       ]);
@@ -670,7 +723,7 @@ function App() {
       setAccountMessage("");
 
       const currentToken = localStorage.getItem("token");
-      const response = await fetch(`${API_URL}/drivers?limit=100`, {
+      const response = await apiRequest(`/drivers?limit=100`, {
         headers: { Authorization: `Bearer ${currentToken}` },
       });
 
@@ -723,18 +776,18 @@ function App() {
       }
 
       const currentToken = localStorage.getItem("token");
-      const response = await fetch(`${API_URL}/transactions/settlement`, {
+      const response = await apiRequest(`/transactions/settlement`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
           Authorization: `Bearer ${currentToken}`,
         },
-        body: JSON.stringify({
+        body: {
           driverId: selectedAccountDriver.id,
           amount,
           note: settlementNote || null,
           idempotencyKey: settlementIdempotencyKeyRef.current,
-        }),
+        },
       });
 
       const result = await response.json();
@@ -766,8 +819,8 @@ function App() {
       setChatMessage("");
 
       const currentToken = localStorage.getItem("token");
-      const response = await fetch(
-        `${API_URL}/messages/conversation/${driver.id}`,
+      const response = await apiRequest(
+        `/messages/conversation/${driver.id}`,
         {
           headers: {
             Authorization: `Bearer ${currentToken}`,
@@ -798,7 +851,7 @@ function App() {
       setChatMessage("");
 
       const currentToken = localStorage.getItem("token");
-      const response = await fetch(`${API_URL}/drivers?limit=100`, {
+      const response = await apiRequest(`/drivers?limit=100`, {
         headers: {
           Authorization: `Bearer ${currentToken}`,
         },
@@ -1142,7 +1195,7 @@ function App() {
       setError("");
 
       const currentToken = localStorage.getItem("token");
-      const response = await fetch(`${API_URL}/tracking/incidents`, {
+      const response = await apiRequest(`/tracking/incidents`, {
         headers: {
           Authorization: `Bearer ${currentToken}`,
         },
@@ -1610,10 +1663,10 @@ function App() {
       setLoading(true);
       setError("");
 
-      const response = await fetch(`${API_URL}/auth/login`, {
+      const response = await apiRequest(`/auth/login`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ phone, password }),
+        body: { phone, password },
       });
 
       const result = await response.json();
@@ -1697,15 +1750,46 @@ function App() {
 
   return (
     <div className="app">
-      <aside className="sidebar">
+      <button
+        type="button"
+        className="mobile-nav-toggle"
+        onClick={() => setMobileNavOpen(true)}
+        aria-label="فتح القائمة"
+      >
+        <span />
+        <span />
+        <span />
+      </button>
+
+      {mobileNavOpen && (
+        <div
+          className="mobile-nav-backdrop"
+          onClick={() => setMobileNavOpen(false)}
+        />
+      )}
+
+      <aside className={mobileNavOpen ? "sidebar mobile-open" : "sidebar"}>
         <div>
-          <h1 className="logo">RouteDesk</h1>
+          <div className="sidebar-top-row">
+            <h1 className="logo">RouteDesk</h1>
+            <button
+              type="button"
+              className="mobile-nav-close"
+              onClick={() => setMobileNavOpen(false)}
+              aria-label="إغلاق القائمة"
+            >
+              ✕
+            </button>
+          </div>
           <p className="logo-subtitle">نظام إدارة السائقين</p>
 
           <nav className="nav">
             <button
               className={view === "dashboard" ? "nav-item active" : "nav-item"}
-              onClick={() => setView("dashboard")}
+              onClick={() => {
+                setView("dashboard");
+                setMobileNavOpen(false);
+              }}
             >
               لوحة التحكم
             </button>
@@ -1713,7 +1797,10 @@ function App() {
 {isAdmin && (
             <button
             className={view === "tracking" ? "nav-item active" : "nav-item"}
-            onClick={() => setView("tracking")}
+            onClick={() => {
+              setView("tracking");
+              setMobileNavOpen(false);
+            }}
             >
             التتبع المباشر
             </button>
@@ -1723,7 +1810,10 @@ function App() {
               className={
                 view === "tracking-incidents" ? "nav-item active" : "nav-item"
               }
-              onClick={openTrackingIncidents}
+              onClick={() => {
+                openTrackingIncidents();
+                setMobileNavOpen(false);
+              }}
             >
               تنبيهات التتبع
             </button>
@@ -1732,7 +1822,10 @@ function App() {
 {isAdmin && (
             <button
               className={view === "drivers" ? "nav-item active" : "nav-item"}
-              onClick={openDrivers}
+              onClick={() => {
+                openDrivers();
+                setMobileNavOpen(false);
+              }}
             >
               السائقون
             </button>
@@ -1740,20 +1833,29 @@ function App() {
 {isAdmin && (
             <button
               className={view === "businesses" ? "nav-item active" : "nav-item"}
-              onClick={openBusinesses}
+              onClick={() => {
+                openBusinesses();
+                setMobileNavOpen(false);
+              }}
             >
               المحلات
             </button>
             )}
             <button
               className={view === "reports" ? "nav-item active" : "nav-item"}
-              onClick={openReports}
+              onClick={() => {
+                openReports();
+                setMobileNavOpen(false);
+              }}
             >
               التقارير
             </button>
             <button
               className={view === "chat" ? "nav-item active" : "nav-item"}
-              onClick={openChat}
+              onClick={() => {
+                openChat();
+                setMobileNavOpen(false);
+              }}
             >
               الدردشة
             </button>
@@ -1761,7 +1863,10 @@ function App() {
 {isAdmin && (
             <button
               className={view === "users" ? "nav-item active" : "nav-item"}
-              onClick={openUsers}
+              onClick={() => {
+                openUsers();
+                setMobileNavOpen(false);
+              }}
             >
               إدارة المستخدمين
             </button>
@@ -1769,7 +1874,10 @@ function App() {
 
             <button
               className={view === "accounts" ? "nav-item active" : "nav-item"}
-              onClick={openAccounts}
+              onClick={() => {
+                openAccounts();
+                setMobileNavOpen(false);
+              }}
             >
               الحسابات
             </button>
@@ -1924,16 +2032,33 @@ function App() {
           <>
             <section className="stats">
               <div className="stat-card">
+                <span className="stat-icon icon-blue">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <circle cx="12" cy="8" r="3.2" />
+                    <path d="M5 20c0-3.5 3-6 7-6s7 2.5 7 6" strokeLinecap="round" />
+                  </svg>
+                </span>
                 <span>إجمالي السائقين</span>
                 <strong>{summary.totalDrivers}</strong>
               </div>
 
               <div className="stat-card">
+                <span className="stat-icon icon-green">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <path d="M4 12.5 9.5 18 20 6" strokeLinecap="round" strokeLinejoin="round" />
+                  </svg>
+                </span>
                 <span>السائقون النشطون</span>
                 <strong>{summary.activeDrivers}</strong>
               </div>
 
               <div className="stat-card">
+                <span className="stat-icon icon-purple">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <path d="M4 10 12 4l8 6" strokeLinecap="round" strokeLinejoin="round" />
+                    <path d="M5.5 9.5v9a1 1 0 0 0 1 1H17.5a1 1 0 0 0 1-1v-9" strokeLinecap="round" strokeLinejoin="round" />
+                  </svg>
+                </span>
                 <span>المحلات</span>
                 <strong>{summary.totalBusinesses}</strong>
               </div>
@@ -1943,6 +2068,13 @@ function App() {
                 className="stat-card warning"
                 onClick={openTrackingIncidents}
               >
+                <span className="stat-icon icon-orange">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <path d="M12 4 21 19H3L12 4Z" strokeLinejoin="round" />
+                    <path d="M12 10v4" strokeLinecap="round" />
+                    <circle cx="12" cy="16.6" r="0.9" fill="currentColor" stroke="none" />
+                  </svg>
+                </span>
                 <span>تنبيهات التتبع</span>
                 <strong>{summary.openTrackingIncidents}</strong>
               </button>
@@ -1965,7 +2097,7 @@ function App() {
               {drivers.map((driver) => (
                 <div className="driver-row" key={driver.id}>
                   <div className="driver-info">
-                    <div className="driver-avatar">
+                    <div className="driver-avatar" style={{ background: getAvatarColor(driver.name) }}>
                       {driver.name.charAt(0).toUpperCase()}
                     </div>
 
@@ -2190,7 +2322,7 @@ function App() {
                     {allDrivers.map((driver) => (
                       <div className="business-row" key={driver.id}>
                         <div className="business-main-info">
-                          <div className="driver-avatar">
+                          <div className="driver-avatar" style={{ background: getAvatarColor(driver.name) }}>
                             {driver.name.charAt(0).toUpperCase()}
                           </div>
                           <div>
@@ -2474,7 +2606,7 @@ function App() {
                       onClick={() => loadConversation(driver)}
                     >
                       <div className="business-main-info">
-                        <div className="driver-avatar">
+                        <div className="driver-avatar" style={{ background: getAvatarColor(driver.name) }}>
                           {driver.name.charAt(0).toUpperCase()}
                         </div>
                         <div>
@@ -2849,7 +2981,7 @@ function App() {
                     {systemUsers.map((systemUser) => (
                       <div className="business-row" key={systemUser.id}>
                         <div className="business-main-info">
-                          <div className="driver-avatar">
+                          <div className="driver-avatar" style={{ background: getAvatarColor(systemUser.name) }}>
                             {systemUser.name.charAt(0).toUpperCase()}
                           </div>
 
@@ -2974,7 +3106,7 @@ function App() {
                       onClick={() => loadAccountDriver(driver)}
                     >
                       <div className="business-main-info">
-                        <div className="driver-avatar">
+                        <div className="driver-avatar" style={{ background: getAvatarColor(driver.name) }}>
                           {driver.name.charAt(0).toUpperCase()}
                         </div>
                         <div>
@@ -3239,6 +3371,182 @@ function App() {
           </section>
         )}
       </main>
+
+      {/* ========================================
+          شريط تنقل سفلي (للموبايل فقط)
+          دائماً ظاهر، ما ينختفي أبداً - يحل مشكلة
+          القائمة الجانبية المخفية على الأندرويد
+      ======================================== */}
+      <nav className="bottom-nav">
+        <button
+          type="button"
+          className={view === "dashboard" ? "bottom-nav-item active" : "bottom-nav-item"}
+          onClick={() => { setView("dashboard"); setMoreMenuOpen(false); }}
+        >
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <path d="M3 11.5 12 4l9 7.5" strokeLinecap="round" strokeLinejoin="round" />
+            <path d="M5.5 10v9a1 1 0 0 0 1 1H10v-5.5a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1V20h3.5a1 1 0 0 0 1-1v-9" strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
+          <span>الرئيسية</span>
+        </button>
+
+        {isAdmin && (
+          <button
+            type="button"
+            className={view === "tracking" ? "bottom-nav-item active" : "bottom-nav-item"}
+            onClick={() => { setView("tracking"); setMoreMenuOpen(false); }}
+          >
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M12 21s-7-6.2-7-11.5A7 7 0 0 1 19 9.5C19 14.8 12 21 12 21Z" strokeLinecap="round" strokeLinejoin="round" />
+              <circle cx="12" cy="9.5" r="2.3" />
+            </svg>
+            <span>التتبع</span>
+          </button>
+        )}
+
+        {isAdmin && (
+          <button
+            type="button"
+            className={view === "drivers" ? "bottom-nav-item active" : "bottom-nav-item"}
+            onClick={() => { openDrivers(); setMoreMenuOpen(false); }}
+          >
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <circle cx="12" cy="8" r="3.2" />
+              <path d="M5 20c0-3.5 3-6 7-6s7 2.5 7 6" strokeLinecap="round" />
+            </svg>
+            <span>السائقون</span>
+          </button>
+        )}
+
+        <button
+          type="button"
+          className={view === "accounts" ? "bottom-nav-item active" : "bottom-nav-item"}
+          onClick={() => { openAccounts(); setMoreMenuOpen(false); }}
+        >
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <rect x="3" y="6" width="18" height="13" rx="2.3" />
+            <path d="M3 10h18" />
+            <circle cx="16.5" cy="14" r="1.3" fill="currentColor" stroke="none" />
+          </svg>
+          <span>الحسابات</span>
+        </button>
+
+        <button
+          type="button"
+          className={moreMenuOpen ? "bottom-nav-item active" : "bottom-nav-item"}
+          onClick={() => setMoreMenuOpen((open) => !open)}
+        >
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <circle cx="5" cy="12" r="1.6" fill="currentColor" stroke="none" />
+            <circle cx="12" cy="12" r="1.6" fill="currentColor" stroke="none" />
+            <circle cx="19" cy="12" r="1.6" fill="currentColor" stroke="none" />
+          </svg>
+          <span>المزيد</span>
+        </button>
+      </nav>
+
+      {moreMenuOpen && (
+        <>
+          <div
+            className="more-menu-backdrop"
+            onClick={() => setMoreMenuOpen(false)}
+          />
+          <div className="more-menu-sheet">
+            <div className="more-menu-handle" />
+            <h3>المزيد من الخيارات</h3>
+
+            <div className="more-menu-grid">
+              {isAdmin && (
+                <button
+                  type="button"
+                  onClick={() => { openTrackingIncidents(); setMoreMenuOpen(false); }}
+                >
+                  <span className="more-menu-icon icon-orange">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                      <path d="M12 4 21 19H3L12 4Z" strokeLinejoin="round" />
+                      <path d="M12 10v4" strokeLinecap="round" />
+                      <circle cx="12" cy="16.6" r="0.9" fill="currentColor" stroke="none" />
+                    </svg>
+                  </span>
+                  تنبيهات التتبع
+                </button>
+              )}
+
+              {isAdmin && (
+                <button
+                  type="button"
+                  onClick={() => { openBusinesses(); setMoreMenuOpen(false); }}
+                >
+                  <span className="more-menu-icon icon-purple">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                      <path d="M4 10 12 4l8 6" strokeLinecap="round" strokeLinejoin="round" />
+                      <path d="M5.5 9.5v9a1 1 0 0 0 1 1H17.5a1 1 0 0 0 1-1v-9" strokeLinecap="round" strokeLinejoin="round" />
+                    </svg>
+                  </span>
+                  المحلات
+                </button>
+              )}
+
+              <button
+                type="button"
+                onClick={() => { openReports(); setMoreMenuOpen(false); }}
+              >
+                <span className="more-menu-icon icon-blue">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <rect x="5" y="3.5" width="14" height="17" rx="2" />
+                    <path d="M8.5 8h7M8.5 12h7M8.5 16h4" strokeLinecap="round" />
+                  </svg>
+                </span>
+                التقارير
+              </button>
+
+              <button
+                type="button"
+                onClick={() => { openChat(); setMoreMenuOpen(false); }}
+              >
+                <span className="more-menu-icon icon-green">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <path d="M4 5.5h16v11H9l-4 3.5v-3.5H4v-11Z" strokeLinejoin="round" />
+                  </svg>
+                </span>
+                الدردشة
+              </button>
+
+              {isAdmin && (
+                <button
+                  type="button"
+                  onClick={() => { openUsers(); setMoreMenuOpen(false); }}
+                >
+                  <span className="more-menu-icon icon-teal">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                      <circle cx="12" cy="8" r="3.2" />
+                      <path d="M5 20c0-3.5 3-6 7-6s7 2.5 7 6" strokeLinecap="round" />
+                    </svg>
+                  </span>
+                  إدارة المستخدمين
+                </button>
+              )}
+
+              <button
+                type="button"
+                onClick={() => {
+                  localStorage.removeItem("token");
+                  localStorage.removeItem("user");
+                  window.location.reload();
+                }}
+              >
+                <span className="more-menu-icon icon-red">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <path d="M9 4H6a1.5 1.5 0 0 0-1.5 1.5v13A1.5 1.5 0 0 0 6 20h3" strokeLinecap="round" />
+                    <path d="M14.5 16 19 12l-4.5-4M19 12H9" strokeLinecap="round" strokeLinejoin="round" />
+                  </svg>
+                </span>
+                خروج
+              </button>
+            </div>
+          </div>
+        </>
+      )}
     </div>
   );
 }

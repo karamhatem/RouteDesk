@@ -41,6 +41,14 @@
   background: var(--background);
 }
 
+.mobile-nav-toggle {
+  display: none;
+}
+
+.mobile-nav-backdrop {
+  display: none;
+}
+
 
 /* =========================
    Sidebar
@@ -80,6 +88,16 @@
   letter-spacing: -1px;
 
   color: #ffffff;
+}
+
+.sidebar-top-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.mobile-nav-close {
+  display: none;
 }
 
 .logo-subtitle {
@@ -433,7 +451,7 @@
   flex-shrink: 0;
 
   background: var(--primary-soft);
-  color: var(--primary);
+  color: #ffffff;
 }
 
 .driver-info > div:last-child {
@@ -640,12 +658,92 @@
 }
 
 @media (max-width: 800px) {
+  .mobile-nav-toggle {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    gap: 5px;
+
+    position: fixed;
+    top: 16px;
+    left: 16px;
+    z-index: 997;
+
+    width: 44px;
+    height: 44px;
+
+    border: none;
+    border-radius: 12px;
+
+    background: var(--sidebar);
+    box-shadow: var(--shadow);
+
+    padding: 0;
+  }
+
+  .mobile-nav-toggle span {
+    display: block;
+    width: 20px;
+    height: 2px;
+    margin: 0 auto;
+    background: white;
+    border-radius: 2px;
+  }
+
+  .mobile-nav-backdrop {
+    display: block;
+
+    position: fixed;
+    inset: 0;
+
+    background: rgba(12, 23, 41, 0.55);
+    backdrop-filter: blur(2px);
+
+    z-index: 998;
+  }
+
   .sidebar {
-    display: none;
+    display: flex;
+
+    position: fixed;
+    top: 0;
+    right: 0;
+
+    width: 280px;
+    height: 100vh;
+
+    transform: translateX(100%);
+    transition: transform 0.28s ease;
+
+    z-index: 999;
+
+    box-shadow: -20px 0 40px rgba(12, 23, 41, 0.25);
+  }
+
+  .sidebar.mobile-open {
+    transform: translateX(0);
+  }
+
+  .mobile-nav-close {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+
+    width: 32px;
+    height: 32px;
+
+    border: none;
+    border-radius: 10px;
+
+    background: var(--sidebar-soft);
+    color: white;
+
+    font-size: 15px;
   }
 
   .main {
     padding: 22px;
+    padding-top: 76px;
   }
 
   .topbar {
@@ -2414,3 +2512,363 @@ button.business-row:hover {
   }
 }
 
+
+/* =========================================================
+   إصلاحات وتحسينات نسخة الموبايل (تطبيق أندرويد)
+   تحل مشكلة الفراغ الفارغ، تغطية شريط الحالة على الزر،
+   وتحسن الشكل العام ليكون مريح ومرتب على شاشة صغيرة
+========================================================= */
+
+/* حل مشكلة زر القائمة المخفي تحت شريط الحالة (الساعة/البطارية) */
+@media (max-width: 800px) {
+  .mobile-nav-toggle {
+    top: calc(16px + env(safe-area-inset-top, 0px));
+  }
+
+  .main {
+    padding-top: calc(76px + env(safe-area-inset-top, 0px));
+  }
+
+  .sidebar {
+    padding-top: calc(30px + env(safe-area-inset-top, 0px));
+  }
+}
+
+/* بطاقة السائق: تصميم عمودين واضح (معلومات يمين، حالة/رصيد يسار)
+   بدل تكديس كل عنصر بسطر لحاله وترك فراغ فارغ */
+@media (max-width: 800px) {
+  .driver-row {
+    flex-direction: row;
+    align-items: flex-start;
+    flex-wrap: nowrap;
+    padding: 18px 0;
+  }
+
+  .driver-info {
+    flex: 1 1 auto;
+    min-width: 0;
+    align-items: flex-start;
+  }
+
+  .driver-info > div:last-child {
+    min-width: 0;
+  }
+
+  .driver-info strong {
+    display: block;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 100%;
+  }
+
+  .driver-data {
+    flex: 0 0 auto;
+    width: auto;
+    flex-direction: column;
+    align-items: flex-end;
+    justify-content: flex-start;
+    gap: 10px;
+
+    padding-inline-start: 12px;
+  }
+
+  .driver-data > div {
+    align-items: flex-end;
+  }
+
+  .driver-data strong {
+    font-size: 15px;
+  }
+
+  .details-button {
+    width: 100%;
+    text-align: center;
+  }
+}
+
+@media (max-width: 380px) {
+  .driver-avatar {
+    width: 42px;
+    height: 42px;
+    font-size: 14px;
+  }
+
+  .driver-info span,
+  .driver-info strong {
+    font-size: 13px;
+  }
+}
+
+/* بطاقات إحصائيات أنيقة بشكل شبكة عمودين بدل التكديس الكامل */
+@media (max-width: 560px) {
+  .stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px;
+  }
+
+  .stat-card {
+    min-height: 100px;
+    padding: 16px;
+    border-radius: 14px;
+  }
+
+  .stat-card span {
+    font-size: 12px;
+    margin-bottom: 8px;
+  }
+
+  .stat-card strong {
+    font-size: 24px;
+  }
+
+  .content-card {
+    padding: 18px;
+    border-radius: 16px;
+  }
+
+  .admin-box {
+    width: 100%;
+  }
+
+  .topbar h2 {
+    font-size: 24px;
+  }
+}
+
+/* راحة بصرية عامة: مسافات وحواف ألطف على الموبايل */
+@media (max-width: 800px) {
+  .main {
+    padding-bottom: 40px;
+  }
+
+  .content-card + .content-card,
+  .stats + .content-card {
+    margin-top: 16px;
+  }
+
+  .primary-button,
+  .details-button {
+    min-height: 40px;
+  }
+}
+
+/* =========================================================
+   شريط تنقل سفلي (Bottom Navigation) - تصميم موبايل حقيقي
+   يحل مشكلة القائمة الجانبية المخفية بشكل نهائي
+========================================================= */
+
+.bottom-nav {
+  display: none;
+}
+
+/* افتراضياً القائمة الجانبية القديمة تبقى للكمبيوتر */
+@media (max-width: 800px) {
+  .mobile-nav-toggle,
+  .mobile-nav-backdrop,
+  .sidebar {
+    display: none !important;
+  }
+
+  .main {
+    padding-top: calc(20px + env(safe-area-inset-top, 0px));
+    padding-bottom: calc(92px + env(safe-area-inset-bottom, 0px));
+  }
+
+  .bottom-nav {
+    display: flex;
+    align-items: stretch;
+    justify-content: space-around;
+
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 950;
+
+    height: calc(64px + env(safe-area-inset-bottom, 0px));
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+
+    background: #ffffff;
+    border-top: 1px solid var(--border);
+    box-shadow: 0 -8px 24px rgba(20, 34, 58, 0.08);
+  }
+
+  .bottom-nav-item {
+    flex: 1 1 0;
+
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+
+    border: none;
+    background: transparent;
+
+    color: var(--muted);
+    font-size: 10.5px;
+    font-weight: 600;
+
+    padding: 6px 2px 0;
+
+    transition: color 0.15s ease, transform 0.15s ease;
+  }
+
+  .bottom-nav-item svg {
+    width: 22px;
+    height: 22px;
+  }
+
+  .bottom-nav-item.active {
+    color: var(--primary);
+    transform: translateY(-1px);
+  }
+
+  .bottom-nav-item.active svg {
+    filter: drop-shadow(0 2px 6px rgba(37, 99, 235, 0.35));
+  }
+
+  /* قائمة "المزيد" المنبثقة من الأسفل */
+  .more-menu-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 960;
+
+    background: rgba(12, 23, 41, 0.5);
+    backdrop-filter: blur(2px);
+  }
+
+  .more-menu-sheet {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 970;
+
+    background: #ffffff;
+    border-radius: 22px 22px 0 0;
+
+    padding: 12px 20px calc(28px + env(safe-area-inset-bottom, 0px));
+
+    box-shadow: 0 -20px 50px rgba(12, 23, 41, 0.25);
+
+    animation: more-menu-slide-up 0.22s ease;
+  }
+
+  @keyframes more-menu-slide-up {
+    from { transform: translateY(100%); }
+    to { transform: translateY(0); }
+  }
+
+  .more-menu-handle {
+    width: 42px;
+    height: 4px;
+    margin: 6px auto 14px;
+
+    border-radius: 999px;
+    background: var(--border);
+  }
+
+  .more-menu-sheet h3 {
+    margin: 0 0 16px;
+
+    color: var(--text);
+    font-size: 16px;
+    font-weight: 800;
+  }
+
+  .more-menu-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 12px;
+  }
+
+  .more-menu-grid button {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+
+    border: 1px solid var(--border);
+    border-radius: 16px;
+
+    background: var(--background);
+    color: var(--text);
+
+    padding: 16px 6px;
+
+    font-size: 12px;
+    font-weight: 600;
+
+    transition: background 0.15s ease, border-color 0.15s ease;
+  }
+
+  .more-menu-grid button:active {
+    background: var(--primary-soft);
+    border-color: var(--primary);
+  }
+
+  .more-menu-icon {
+    font-size: 22px;
+  }
+}
+
+/* =========================================================
+   لمسات UI/UX احترافية: أيقونات ملونة + هيدر متدرج
+========================================================= */
+
+.stat-icon,
+.more-menu-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+
+  width: 40px;
+  height: 40px;
+
+  border-radius: 12px;
+  margin-bottom: 10px;
+}
+
+.stat-icon svg,
+.more-menu-icon svg {
+  width: 20px;
+  height: 20px;
+}
+
+.icon-blue   { background: #eaf1ff; color: #2563eb; }
+.icon-green  { background: #e9fbf1; color: #16a34a; }
+.icon-purple { background: #f3ecff; color: #7c3aed; }
+.icon-orange { background: #fff3e6; color: #ea7e1c; }
+.icon-teal   { background: #e6fbf9; color: #0f9d95; }
+.icon-red    { background: #ffecec; color: #e6432f; }
+
+@media (max-width: 800px) {
+  .stat-card {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  /* هيدر بلمسة تدرج ناعمة تعطي إحساس احترافي بدل الأبيض الجاف */
+  .topbar {
+    position: relative;
+    padding: 22px 20px 26px;
+    margin: -20px -16px 18px;
+
+    background: linear-gradient(135deg, #eef4ff 0%, #f7f5ff 55%, #fdf6ee 100%);
+    border-radius: 0 0 26px 26px;
+  }
+
+  .topbar h2 {
+    background: linear-gradient(90deg, #1d2a4d, #2563eb);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+
+  .more-menu-icon {
+    margin-bottom: 6px;
+  }
+}

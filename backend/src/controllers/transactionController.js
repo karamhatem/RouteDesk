@@ -84,10 +84,52 @@ const getMyBalance = async (req, res) => {
 const createCollection = async (req, res) => {
     try {
         const driverId = req.user.id;
-        const { businessId, amount, note } = req.body;
+        const { businessId, amount, note, idempotencyKey } = req.body;
 
         const numericAmount = parsePositiveNumber(amount);
         const numericBusinessId = Number(businessId);
+
+        // ========================================
+        // حماية من التسجيل المكرر (ضغط مزدوج بالغلط)
+        // إذا نفس الطلب انرسل قبل، نرجع نفس النتيجة القديمة
+        // بدل ما نسجل المبلغ مرتين
+        // ========================================
+        if (idempotencyKey) {
+            const existing = await prisma.transaction.findUnique({
+                where: { idempotencyKey },
+                select: {
+                    id: true,
+                    type: true,
+                    amount: true,
+                    note: true,
+                    createdAt: true,
+                    business: {
+                        select: { id: true, name: true, type: true }
+                    },
+                    driver: {
+                        select: { id: true, name: true, phone: true }
+                    },
+                    recorder: {
+                        select: { id: true, name: true, role: true }
+                    }
+                }
+            });
+
+            if (existing) {
+                const currentProfile = await prisma.driverProfile.findUnique({
+                    where: { userId: driverId },
+                    select: { balance: true }
+                });
+
+                return res.status(200).json({
+                    success: true,
+                    message: "Collection already recorded (duplicate request ignored)",
+                    transaction: existing,
+                    currentBalance: Number(currentProfile?.balance || 0),
+                    duplicate: true
+                });
+            }
+        }
 
         if (!Number.isInteger(numericBusinessId) || numericBusinessId <= 0) {
             return res.status(400).json({
@@ -155,7 +197,8 @@ const createCollection = async (req, res) => {
                     note: note?.trim() || null,
                     driverId,
                     businessId: numericBusinessId,
-                    recordedBy: driverId
+                    recordedBy: driverId,
+                    idempotencyKey: idempotencyKey || null
                 },
                 select: {
                     id: true,
@@ -203,6 +246,16 @@ const createCollection = async (req, res) => {
             currentBalance: result.balance
         });
     } catch (error) {
+        // إذا وصل نفس الطلب بنفس اللحظة تماماً (نادر جداً)
+        // قاعدة البيانات نفسها ترفض التكرار، ونتعامل معه بلطف
+        if (error.code === "P2002" && error.meta?.target?.includes("idempotencyKey")) {
+            return res.status(200).json({
+                success: true,
+                message: "Collection already recorded (duplicate request ignored)",
+                duplicate: true
+            });
+        }
+
         console.error("Create collection error:", error.message);
         return res.status(500).json({
             success: false,
@@ -218,10 +271,47 @@ const createCollection = async (req, res) => {
 const createSettlement = async (req, res) => {
     try {
         const recorderId = req.user.id;
-        const { driverId, amount, note } = req.body;
+        const { driverId, amount, note, idempotencyKey } = req.body;
 
         const numericDriverId = Number(driverId);
         const numericAmount = parsePositiveNumber(amount);
+
+        // ========================================
+        // حماية من التسجيل المكرر (ضغط مزدوج بالغلط)
+        // ========================================
+        if (idempotencyKey) {
+            const existing = await prisma.transaction.findUnique({
+                where: { idempotencyKey },
+                select: {
+                    id: true,
+                    type: true,
+                    amount: true,
+                    note: true,
+                    createdAt: true,
+                    driver: {
+                        select: { id: true, name: true, phone: true }
+                    },
+                    recorder: {
+                        select: { id: true, name: true, role: true }
+                    }
+                }
+            });
+
+            if (existing) {
+                const currentProfile = await prisma.driverProfile.findUnique({
+                    where: { userId: numericDriverId },
+                    select: { balance: true }
+                });
+
+                return res.status(200).json({
+                    success: true,
+                    message: "Settlement already recorded (duplicate request ignored)",
+                    transaction: existing,
+                    currentBalance: Number(currentProfile?.balance || 0),
+                    duplicate: true
+                });
+            }
+        }
 
         if (!Number.isInteger(numericDriverId) || numericDriverId <= 0) {
             return res.status(400).json({
@@ -308,7 +398,8 @@ const createSettlement = async (req, res) => {
                     note: note?.trim() || null,
                     driverId: numericDriverId,
                     businessId: null,
-                    recordedBy: recorderId
+                    recordedBy: recorderId,
+                    idempotencyKey: idempotencyKey || null
                 },
                 select: {
                     id: true,
@@ -356,6 +447,15 @@ const createSettlement = async (req, res) => {
             return res.status(400).json({
                 success: false,
                 message: error.message
+            });
+        }
+
+        // إذا وصل نفس الطلب بنفس اللحظة تماماً (نادر جداً)
+        if (error.code === "P2002" && error.meta?.target?.includes("idempotencyKey")) {
+            return res.status(200).json({
+                success: true,
+                message: "Settlement already recorded (duplicate request ignored)",
+                duplicate: true
             });
         }
 

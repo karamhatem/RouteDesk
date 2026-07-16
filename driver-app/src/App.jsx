@@ -120,6 +120,7 @@ function App() {
   const processedOfferKeysRef = useRef(new Set());
   const processedAnswerKeysRef = useRef(new Set());
   const isCreatingOfferRef = useRef(false);
+  const collectionIdempotencyKeyRef = useRef(null);
   const iceRestartAttemptedRef = useRef(false);
 
   const [phone, setPhone] = useState("07722222222");
@@ -127,6 +128,8 @@ function App() {
   const [user, setUser] = useState(null);
   const [driverView, setDriverView] = useState("home");
   const [status, setStatus] = useState("غير متصل");
+  const [locationSocketStatus, setLocationSocketStatus] = useState("لم يبدأ بعد");
+  const [queuedLocationCount, setQueuedLocationCount] = useState(0);
   const [tracking, setTracking] = useState(false);
   const [lastLocation, setLastLocation] = useState(null);
   const [currentBalance, setCurrentBalance] = useState(null);
@@ -164,6 +167,8 @@ function App() {
   useEffect(() => {
     const savedUser = localStorage.getItem("driverUser");
     if (savedUser) setUser(JSON.parse(savedUser));
+
+    setQueuedLocationCount(getQueuedLocations().length);
 
     return () => {
       // لا نوقف التتبع الأصلي عند خروج الواجهة حتى يستمر في الخلفية.
@@ -890,6 +895,7 @@ function App() {
 
       if (response.ok && result.success) {
         clearQueuedLocations();
+        setQueuedLocationCount(0);
         console.log(`تم رفع ${queue.length} موقع مخزن بنجاح`);
       } else {
         console.warn("Failed to sync offline locations:", result.message);
@@ -916,20 +922,19 @@ function App() {
     });
 
     socket.on("connect", () => {
-      setStatus("متصل بالسيرفر");
+      setLocationSocketStatus("متصل ✅");
       flushQueuedLocations();
     });
     socket.on("driver:location-accepted", () =>
-      setStatus("مشاركة الموقع تعمل")
+      setLocationSocketStatus("متصل - يرسل الموقع ✅")
     );
     socket.on("tracking:error", (data) =>
       setError(data.message || "خطأ في التتبع")
     );
     socket.on("connect_error", (err) => {
-      setError(err.message);
-      setStatus("فشل اتصال التتبع");
+      setLocationSocketStatus("فشل الاتصال ❌: " + err.message);
     });
-    socket.on("disconnect", () => setStatus("انقطع اتصال التتبع"));
+    socket.on("disconnect", () => setLocationSocketStatus("انقطع الاتصال ⚠️"));
 
     socketRef.current = socket;
     return socket;
@@ -995,6 +1000,7 @@ function App() {
           } else {
             // مافي اتصال حالياً - نخزن الموقع محلياً بدل ما نضيعه
             queueLocationOffline(locationData);
+            setQueuedLocationCount(getQueuedLocations().length);
           }
         }
       );
@@ -1102,6 +1108,14 @@ function App() {
       }
 
       if (hasCollection) {
+        // لو الرمز مو موجود (أول محاولة)، نولد وحدة جديدة
+        // لو موجود (إعادة محاولة بعد فشل)، نستخدم نفس الرمز
+        // عشان السيرفر يعرف يرفض التكرار لو الطلب وصل مرتين
+        if (!collectionIdempotencyKeyRef.current) {
+          collectionIdempotencyKeyRef.current =
+            `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+        }
+
         const collectionResponse = await apiRequest(
           "/transactions/collection",
           {
@@ -1111,6 +1125,7 @@ function App() {
               businessId: Number(businessId),
               amount: Number(collectionAmount),
               note: collectionNote || `تحصيل أثناء زيارة ${area || "المكان"}`,
+              idempotencyKey: collectionIdempotencyKeyRef.current,
             },
           }
         );
@@ -1123,6 +1138,9 @@ function App() {
               "تم حفظ التقرير لكن فشل تسجيل المبلغ"
           );
         }
+
+        // نجحت العملية - نصفر الرمز عشان الزيارة الجاية تاخذ رمز جديد
+        collectionIdempotencyKeyRef.current = null;
 
         setCurrentBalance(collectionResult.currentBalance);
       }
@@ -1459,6 +1477,20 @@ function App() {
                   <strong>{status}</strong>
                 </div>
 
+                {tracking && (
+                  <div className="status-box">
+                    <span>اتصال إرسال الموقع اللحظي</span>
+                    <strong>{locationSocketStatus}</strong>
+                  </div>
+                )}
+
+                {queuedLocationCount > 0 && (
+                  <div className="status-box">
+                    <span>مواقع مخزنة (لم ترسل بعد)</span>
+                    <strong>{queuedLocationCount}</strong>
+                  </div>
+                )}
+
                 <div className="status-box">
                   <span>الرصيد الحالي</span>
                   <strong>
@@ -1497,6 +1529,8 @@ function App() {
                 onClick={() => {
                   setError("");
                   setSuccess("");
+                  // زيارة جديدة = رمز حماية جديد من التكرار
+                  collectionIdempotencyKeyRef.current = null;
                   setDriverView("visit");
                 }}
               >

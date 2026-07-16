@@ -39,6 +39,7 @@ const ICE_SERVERS = [
 
 function App() {
   const chatSocketRef = useRef(null);
+  const settlementIdempotencyKeyRef = useRef(null);
   const chatEndRef = useRef(null);
   const chatBoxRef = useRef(null);
   const peerConnectionRef = useRef(null);
@@ -642,6 +643,8 @@ function App() {
         throw new Error(transactionsResult.message || "فشل تحميل سجل الحركات");
       }
 
+      // سائق جديد = رمز حماية جديد من التكرار
+      settlementIdempotencyKeyRef.current = null;
       setSelectedAccountDriver(driver);
       setAccountBalance(
         Number(
@@ -712,6 +715,13 @@ function App() {
       setError("");
       setAccountMessage("");
 
+      // لو الرمز مو موجود (أول محاولة)، نولد وحدة جديدة
+      // لو موجود (إعادة محاولة بعد فشل)، نستخدم نفس الرمز
+      if (!settlementIdempotencyKeyRef.current) {
+        settlementIdempotencyKeyRef.current =
+          `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      }
+
       const currentToken = localStorage.getItem("token");
       const response = await fetch(`${API_URL}/transactions/settlement`, {
         method: "POST",
@@ -723,6 +733,7 @@ function App() {
           driverId: selectedAccountDriver.id,
           amount,
           note: settlementNote || null,
+          idempotencyKey: settlementIdempotencyKeyRef.current,
         }),
       });
 
@@ -731,6 +742,9 @@ function App() {
       if (!response.ok || !result.success) {
         throw new Error(result.message || "فشل تسجيل التسوية");
       }
+
+      // نجحت العملية - نصفر الرمز عشان التسوية الجاية تاخذ رمز جديد
+      settlementIdempotencyKeyRef.current = null;
 
       setSettlementAmount("");
       setSettlementNote("");

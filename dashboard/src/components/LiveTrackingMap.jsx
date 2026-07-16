@@ -9,7 +9,7 @@ import {
 import { io } from "socket.io-client";
 import L from "leaflet";
 
-const SOCKET_URL = "http://localhost:5000";
+const SOCKET_URL = "https://routedesk-production.up.railway.app";
 
 const driverIcon = L.divIcon({
   className: "driver-map-marker",

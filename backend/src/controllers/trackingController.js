@@ -641,6 +641,176 @@ const getTrackingIncidents = async (req, res) => {
 
 
 
+// =====================================================
+// استقبال دفعة مواقع مخزنة أثناء انقطاع النت
+// السائق يرسلها كلها مرة وحدة لما النت يرجع
+// =====================================================
+const syncOfflineLocations = async (req, res) => {
+
+    try {
+
+        const driverId = req.user.id;
+        const { locations } = req.body;
+
+
+        if (!Array.isArray(locations) || locations.length === 0) {
+
+            return res.status(400).json({
+                success: false,
+                message: "locations must be a non-empty array"
+            });
+
+        }
+
+
+        // نتأكد كل نقطة صحيحة، ونتجاهل الغلط بدل ما نفشل الطلب كامل
+        const validLocations = locations
+            .map((item) => ({
+                latitude: Number(item.latitude),
+                longitude: Number(item.longitude),
+                timestamp: (item.timestamp || item.lastSeen)
+                    ? new Date(item.timestamp || item.lastSeen)
+                    : new Date()
+            }))
+            .filter((item) =>
+                Number.isFinite(item.latitude) &&
+                Number.isFinite(item.longitude) &&
+                item.latitude >= -90 && item.latitude <= 90 &&
+                item.longitude >= -180 && item.longitude <= 180
+            );
+
+
+        if (validLocations.length === 0) {
+
+            return res.status(400).json({
+                success: false,
+                message: "No valid locations in the batch"
+            });
+
+        }
+
+
+        const driver = await prisma.user.findUnique({
+
+            where: {
+                id: driverId
+            },
+
+            include: {
+                driverProfile: true
+            }
+
+        });
+
+
+        if (!driver || driver.role !== "DRIVER") {
+
+            return res.status(403).json({
+                success: false,
+                message: "Only drivers can sync location"
+            });
+
+        }
+
+
+        if (!driver.isActive) {
+
+            return res.status(403).json({
+                success: false,
+                message: "Driver account is disabled"
+            });
+
+        }
+
+
+        if (!driver.driverProfile) {
+
+            return res.status(404).json({
+                success: false,
+                message: "Driver profile not found"
+            });
+
+        }
+
+
+        // نرتبهم بالوقت، ونأخذ آخر نقطة كموقع حالي
+        // (السيرفر حالياً يخزن آخر موقع بس، مو كل مسار السائق)
+        validLocations.sort(
+            (a, b) => a.timestamp.getTime() - b.timestamp.getTime()
+        );
+
+        const latest = validLocations[validLocations.length - 1];
+
+
+        const profile = await prisma.driverProfile.update({
+
+            where: {
+                userId: driverId
+            },
+
+            data: {
+                lastLatitude: latest.latitude,
+                lastLongitude: latest.longitude,
+                lastSeen: latest.timestamp
+            },
+
+            select: {
+                lastLatitude: true,
+                lastLongitude: true,
+                lastSeen: true
+            }
+
+        });
+
+
+        // نبلغ الإدارة بالموقع المحدث لحظياً، نفس شغل السوكيت
+        const io = req.app.get("io");
+
+        if (io) {
+
+            io.to("admin-tracking").emit("driver:location-updated", {
+                driverId,
+                driverName: driver.name,
+                latitude: profile.lastLatitude,
+                longitude: profile.lastLongitude,
+                lastSeen: profile.lastSeen,
+                syncedFromOffline: true
+            });
+
+        }
+
+
+        res.json({
+
+            success: true,
+
+            message: `Synced ${validLocations.length} offline location(s)`,
+
+            pointsReceived: locations.length,
+            pointsAccepted: validLocations.length,
+
+            location: {
+                latitude: profile.lastLatitude,
+                longitude: profile.lastLongitude,
+                lastSeen: profile.lastSeen
+            }
+
+        });
+
+
+    } catch (error) {
+
+        res.status(500).json({
+            success: false,
+            message: error.message
+        });
+
+    }
+
+};
+
+
+
 module.exports = {
 
     enableLocationSharing,
@@ -648,6 +818,8 @@ module.exports = {
     disableLocationSharing,
 
     updateLocation,
+
+    syncOfflineLocations,
 
     getDriversLocations,
 

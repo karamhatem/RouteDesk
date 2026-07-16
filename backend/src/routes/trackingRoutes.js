@@ -8,6 +8,7 @@ const {
     enableLocationSharing,
     disableLocationSharing,
     updateLocation,
+    syncOfflineLocations,
     getDriversLocations,
     getTrackingIncidents
 } = require("../controllers/trackingController");
@@ -40,6 +41,17 @@ router.post(
     "/location",
     auth,
     updateLocation
+);
+
+
+// ========================================
+// تطبيق السائق يرسل دفعة مواقع خزنها أوفلاين
+// بعد ما النت يرجع
+// ========================================
+router.post(
+    "/locations/sync",
+    auth,
+    syncOfflineLocations
 );
 
 

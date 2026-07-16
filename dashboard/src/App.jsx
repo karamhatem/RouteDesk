@@ -6,6 +6,35 @@ import "./App.css";
 const API_URL = "https://routedesk-production.up.railway.app/api";
 const SOCKET_URL = "https://routedesk-production.up.railway.app";
 
+// ========================================
+// إعدادات WebRTC
+// ========================================
+// نفس بيانات TURN المستخدمة بتطبيق السائق - لازم تكون متطابقة
+// بين الطرفين (الإدارة والسائق) عشان المكالمة تشتغل من الجهتين.
+const ICE_SERVERS = [
+  { urls: "stun:stun.relay.metered.ca:80" },
+  {
+    urls: "turn:standard.relay.metered.ca:80",
+    username: "240cefa471c702de92ac30a0",
+    credential: "GYAanB4Ux3H0DNLZ",
+  },
+  {
+    urls: "turn:standard.relay.metered.ca:80?transport=tcp",
+    username: "240cefa471c702de92ac30a0",
+    credential: "GYAanB4Ux3H0DNLZ",
+  },
+  {
+    urls: "turn:standard.relay.metered.ca:443",
+    username: "240cefa471c702de92ac30a0",
+    credential: "GYAanB4Ux3H0DNLZ",
+  },
+  {
+    urls: "turns:standard.relay.metered.ca:443?transport=tcp",
+    username: "240cefa471c702de92ac30a0",
+    credential: "GYAanB4Ux3H0DNLZ",
+  },
+];
+
 
 
 function App() {
@@ -928,7 +957,7 @@ function App() {
     }
 
     const pc = new RTCPeerConnection({
-      iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
+      iceServers: ICE_SERVERS,
     });
 
     pc.onicecandidate = (event) => {

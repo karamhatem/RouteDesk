@@ -1,11 +1,106 @@
 import { useEffect, useRef, useState } from "react";
 import { io } from "socket.io-client";
 import { BackgroundGeolocation } from "@capgo/background-geolocation";
+import { CapacitorHttp, Capacitor } from "@capacitor/core";
 import "./App.css";
 
 const API_URL = "https://routedesk-production.up.railway.app/api";
 const SOCKET_URL = "https://routedesk-production.up.railway.app";
 
+// ========================================
+// طلبات HTTP موحدة
+// ========================================
+// المشكلة: fetch العادي داخل WebView الخاص بـ Capacitor على أندرويد
+// أحياناً يفشل بـ"Failed to fetch" حتى لو النت شغال 100%.
+// الحل: نستخدم CapacitorHttp (يمر عبر شبكة أندرويد الأصلية native)
+// عندما التطبيق يشتغل كتطبيق حقيقي على الموبايل، ونستخدم fetch العادي
+// فقط لو كان يشتغل داخل متصفح عادي (أثناء التطوير على الكمبيوتر مثلاً).
+const apiRequest = async (path, { method = "GET", headers = {}, body } = {}) => {
+  const url = path.startsWith("http") ? path : `${API_URL}${path}`;
+
+  if (Capacitor.isNativePlatform()) {
+    const response = await CapacitorHttp.request({
+      url,
+      method,
+      headers,
+      data: body,
+    });
+
+    return {
+      ok: response.status >= 200 && response.status < 300,
+      status: response.status,
+      json: async () => response.data,
+    };
+  }
+
+  const response = await fetch(url, {
+    method,
+    headers,
+    body: body !== undefined ? JSON.stringify(body) : undefined,
+  });
+
+  return response;
+};
+
+// ========================================
+// إعدادات WebRTC
+// ========================================
+// مهم جداً: STUN وحده لا يكفي لضمان اتصال قوي على كل الشبكات.
+// سجل حساب مجاني على https://www.metered.ca/tools/openrelay/ أو https://xirsys.com
+// واستبدل القيم تحت ببياناتك الحقيقية.
+const ICE_SERVERS = [
+  { urls: "stun:stun.relay.metered.ca:80" },
+  {
+    urls: "turn:standard.relay.metered.ca:80",
+    username: "240cefa471c702de92ac30a0",
+    credential: "GYAanB4Ux3H0DNLZ",
+  },
+  {
+    urls: "turn:standard.relay.metered.ca:80?transport=tcp",
+    username: "240cefa471c702de92ac30a0",
+    credential: "GYAanB4Ux3H0DNLZ",
+  },
+  {
+    urls: "turn:standard.relay.metered.ca:443",
+    username: "240cefa471c702de92ac30a0",
+    credential: "GYAanB4Ux3H0DNLZ",
+  },
+  {
+    urls: "turns:standard.relay.metered.ca:443?transport=tcp",
+    username: "240cefa471c702de92ac30a0",
+    credential: "GYAanB4Ux3H0DNLZ",
+  },
+];
+
+// ========================================
+// تخزين المواقع محلياً لما مافي نت
+// ========================================
+const OFFLINE_LOCATIONS_KEY = "routedesk_offline_locations";
+
+const getQueuedLocations = () => {
+  try {
+    const raw = localStorage.getItem(OFFLINE_LOCATIONS_KEY);
+    return raw ? JSON.parse(raw) : [];
+  } catch {
+    return [];
+  }
+};
+
+const queueLocationOffline = (locationData) => {
+  try {
+    const queue = getQueuedLocations();
+    queue.push(locationData);
+    // نحدد حد أقصى 500 نقطة عشان ما تكبر الذاكرة كثير لو انقطع النت طويل
+    const trimmed = queue.slice(-500);
+    localStorage.setItem(OFFLINE_LOCATIONS_KEY, JSON.stringify(trimmed));
+  } catch (err) {
+    console.warn("Failed to queue location offline:", err);
+  }
+};
+
+const clearQueuedLocations = () => {
+  localStorage.removeItem(OFFLINE_LOCATIONS_KEY);
+};
 
 function App() {
   const socketRef = useRef(null);
@@ -25,6 +120,7 @@ function App() {
   const processedOfferKeysRef = useRef(new Set());
   const processedAnswerKeysRef = useRef(new Set());
   const isCreatingOfferRef = useRef(false);
+  const iceRestartAttemptedRef = useRef(false);
 
   const [phone, setPhone] = useState("07722222222");
   const [password, setPassword] = useState("123456");
@@ -146,6 +242,7 @@ function App() {
     processedOfferKeysRef.current.clear();
     processedAnswerKeysRef.current.clear();
     isCreatingOfferRef.current = false;
+    iceRestartAttemptedRef.current = false;
     setIncomingCall(null);
     setOutgoingCall(null);
     setCallStatus("");
@@ -182,6 +279,36 @@ function App() {
     setIsCameraOff(false);
   };
 
+  // ========================================
+  // جلب الصوت/الفيديو مع خطة بديلة:
+  // لو الكاميرا فشلت (مستخدمة بمكان ثاني أو صلاحية مرفوضة)،
+  // نرجع نحاول بالصوت بس بدل ما نفشل المكالمة كاملة.
+  // ========================================
+  const getCallMediaStream = async (callType) => {
+    try {
+      return {
+        stream: await navigator.mediaDevices.getUserMedia({
+          audio: true,
+          video: callType === "video",
+        }),
+        actualType: callType,
+      };
+    } catch (err) {
+      if (callType === "video") {
+        console.warn(
+          "تعذر تشغيل الكاميرا، جاري المحاولة بالصوت فقط:",
+          err.message
+        );
+        const audioOnlyStream = await navigator.mediaDevices.getUserMedia({
+          audio: true,
+          video: false,
+        });
+        return { stream: audioOnlyStream, actualType: "audio" };
+      }
+      throw err;
+    }
+  };
+
   const createPeerConnection = (otherUserId, callId) => {
     const socket = chatSocketRef.current;
 
@@ -192,8 +319,10 @@ function App() {
       peerConnectionRef.current = null;
     }
 
+    iceRestartAttemptedRef.current = false;
+
     const pc = new RTCPeerConnection({
-      iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
+      iceServers: ICE_SERVERS,
     });
 
     pc.onicecandidate = (event) => {
@@ -218,9 +347,39 @@ function App() {
       }
     };
 
+    // ========================================
+    // مراقبة حالة الاتصال + محاولة إعادة اتصال تلقائية
+    // ========================================
     pc.onconnectionstatechange = () => {
-      if (["failed", "closed", "disconnected"].includes(pc.connectionState)) {
-        console.warn("WebRTC connection state:", pc.connectionState);
+      console.warn("WebRTC connection state:", pc.connectionState);
+
+      if (pc.connectionState === "disconnected") {
+        // انقطاع مؤقت، ممكن يرجع لحاله بمفرده خلال ثواني
+        setCallStatus((current) =>
+          current === "active" || current === "accepted" ? "reconnecting" : current
+        );
+      }
+
+      if (pc.connectionState === "failed" && !iceRestartAttemptedRef.current) {
+        // محاولة وحدة لإعادة تفعيل الاتصال قبل ما نعتبره فشل نهائي
+        iceRestartAttemptedRef.current = true;
+        try {
+          console.warn("Attempting ICE restart...");
+          pc.restartIce();
+        } catch (err) {
+          console.error("ICE restart failed:", err);
+          notifyOtherSideCallEnded();
+          resetCallState("انقطع الاتصال بسبب ضعف الشبكة");
+        }
+      } else if (pc.connectionState === "failed") {
+        // فشل حتى بعد محاولة إعادة الاتصال
+        notifyOtherSideCallEnded();
+        resetCallState("انقطع الاتصال بسبب ضعف الشبكة");
+      }
+
+      if (pc.connectionState === "connected") {
+        iceRestartAttemptedRef.current = false;
+        setCallStatus("active");
       }
     };
 
@@ -228,29 +387,35 @@ function App() {
     return pc;
   };
 
-  const loadCurrentBalance = async ({ silent = true } = {}) => {
-    try {
-      const token = getToken();
-      if (!token) return;
+  // ========================================
+  // جلب رصيد السائق مع إعادة محاولة (backoff تصاعدي)
+  // ========================================
+  const loadCurrentBalance = async ({ silent = true, retries = 4 } = {}) => {
+    const token = getToken();
+    if (!token) return;
 
-      const response = await fetch(`${API_URL}/transactions/me/balance`, {
-        headers: {
-          Authorization: `Bearer ${token}`,
-          "Cache-Control": "no-cache",
-        },
-      });
+    for (let attempt = 0; attempt <= retries; attempt++) {
+      try {
+        const response = await apiRequest("/transactions/me/balance", {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        const result = await response.json();
 
-      const result = await response.json();
+        if (!response.ok || !result.success) {
+          throw new Error(result.message || "فشل تحديث الرصيد");
+        }
 
-      if (!response.ok || !result.success) {
-        throw new Error(result.message || "فشل تحديث الرصيد");
-      }
+        setCurrentBalance(Number(result.balance || 0));
+        return;
+      } catch (err) {
+        console.warn(`Load balance attempt ${attempt + 1} failed:`, err.message);
 
-      setCurrentBalance(Number(result.balance || 0));
-    } catch (err) {
-      console.warn("Load balance error:", err.message);
-      if (!silent) {
-        setError(err.message || "فشل تحديث الرصيد");
+        if (attempt === retries) {
+          if (!silent) setError(err.message || "فشل تحديث الرصيد");
+        } else {
+          // انتظار تصاعدي: 1s, 2s, 4s, 8s
+          await new Promise((r) => setTimeout(r, 1000 * 2 ** attempt));
+        }
       }
     }
   };
@@ -390,16 +555,16 @@ function App() {
         }
 
         isCreatingOfferRef.current = true;
-        setActiveCallType(callType);
 
-        const stream = await navigator.mediaDevices.getUserMedia({
-          audio: true,
-          video: callType === "video",
-        });
-
+        const { stream, actualType } = await getCallMediaStream(callType);
         localStreamRef.current = stream;
+        setActiveCallType(actualType);
 
-        if (localVideoRef.current && callType === "video") {
+        if (actualType !== callType) {
+          setSuccess("تعذر تشغيل الكاميرا، تم المتابعة بمكالمة صوتية فقط");
+        }
+
+        if (localVideoRef.current && actualType === "video") {
           localVideoRef.current.srcObject = stream;
           localVideoRef.current.play?.().catch(() => {});
         }
@@ -416,7 +581,7 @@ function App() {
         socket.emit("webrtc:offer", {
           receiverId: otherUserId,
           callId: payload.callId,
-          callType,
+          callType: actualType,
           offer,
         });
       } catch (err) {
@@ -457,16 +622,16 @@ function App() {
         activeCallIdRef.current = payload.callId;
 
         const callType = payload.callType || incomingCall?.callType || activeCallType || "audio";
-        setActiveCallType(callType);
 
-        const stream = await navigator.mediaDevices.getUserMedia({
-          audio: true,
-          video: callType === "video",
-        });
-
+        const { stream, actualType } = await getCallMediaStream(callType);
         localStreamRef.current = stream;
+        setActiveCallType(actualType);
 
-        if (localVideoRef.current && callType === "video") {
+        if (actualType !== callType) {
+          setSuccess("تعذر تشغيل الكاميرا، تم المتابعة بمكالمة صوتية فقط");
+        }
+
+        if (localVideoRef.current && actualType === "video") {
           localVideoRef.current.srcObject = stream;
           localVideoRef.current.play?.().catch(() => {});
         }
@@ -588,7 +753,7 @@ function App() {
       const token = getToken();
       if (!token) return;
 
-      const response = await fetch(`${API_URL}/businesses/available`, {
+      const response = await apiRequest("/businesses/available", {
         headers: { Authorization: `Bearer ${token}` },
       });
       const result = await response.json();
@@ -609,51 +774,51 @@ function App() {
   };
 
   const login = async (e) => {
-  e.preventDefault();
+    e.preventDefault();
 
-  try {
-    setError("");
-    setSuccess("");
+    try {
+      setError("");
+      setSuccess("");
 
-    // اختبار اتصال من داخل التطبيق نفسه
-    const pingResponse = await fetch(`${API_URL}/ping`);
-    const pingResult = await pingResponse.json();
+      // اختبار اتصال من داخل التطبيق نفسه
+      const pingResponse = await apiRequest("/ping");
+      const pingResult = await pingResponse.json();
 
-    if (!pingResponse.ok || !pingResult.success) {
-      throw new Error("التطبيق لم يصل إلى API ping");
+      if (!pingResponse.ok || !pingResult.success) {
+        throw new Error("التطبيق لم يصل إلى API ping");
+      }
+
+      const response = await apiRequest("/auth/login", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: { phone, password },
+      });
+
+      const result = await response.json();
+
+      if (!response.ok || !result.success) {
+        throw new Error(result.message || "فشل تسجيل الدخول");
+      }
+
+      if (result.user.role !== "DRIVER") {
+        throw new Error("هذا الحساب ليس حساب سائق");
+      }
+
+      localStorage.setItem("driverToken", result.token);
+      localStorage.setItem("driverUser", JSON.stringify(result.user));
+
+      setUser(result.user);
+      setDriverView("home");
+      setStatus("تم تسجيل الدخول");
+
+    } catch (err) {
+      setError(
+        `API: ${API_URL} | الخطأ: ${err.name || ""} ${err.message || err}`
+      );
     }
-
-    const response = await fetch(`${API_URL}/auth/login`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({ phone, password }),
-    });
-
-    const result = await response.json();
-
-    if (!response.ok || !result.success) {
-      throw new Error(result.message || "فشل تسجيل الدخول");
-    }
-
-    if (result.user.role !== "DRIVER") {
-      throw new Error("هذا الحساب ليس حساب سائق");
-    }
-
-    localStorage.setItem("driverToken", result.token);
-    localStorage.setItem("driverUser", JSON.stringify(result.user));
-
-    setUser(result.user);
-    setDriverView("home");
-    setStatus("تم تسجيل الدخول");
-
-  } catch (err) {
-    setError(
-      `API: ${API_URL} | الخطأ: ${err.name || ""} ${err.message || err}`
-    );
-  }
-};
+  };
 
   useEffect(() => {
     if (user) {
@@ -675,8 +840,15 @@ function App() {
 
     const handleFocus = () => loadCurrentBalance();
 
+    // النت رجع بعد انقطاع؟ نحدث الرصيد فوراً بدل ما ننتظر الـ 60 ثانية
+    const handleOnline = () => {
+      loadCurrentBalance();
+      flushQueuedLocations();
+    };
+
     document.addEventListener("visibilitychange", refreshBalance);
     window.addEventListener("focus", handleFocus);
+    window.addEventListener("online", handleOnline);
 
     // حماية إضافية إذا بقي التطبيق مفتوحًا لساعات.
     const intervalId = window.setInterval(() => {
@@ -688,9 +860,45 @@ function App() {
     return () => {
       document.removeEventListener("visibilitychange", refreshBalance);
       window.removeEventListener("focus", handleFocus);
+      window.removeEventListener("online", handleOnline);
       window.clearInterval(intervalId);
     };
   }, [user]);
+
+  // ========================================
+  // إرسال كل المواقع المخزنة محلياً دفعة وحدة
+  // تنادى لما النت يرجع أو السوكيت يتصل
+  // ========================================
+  const flushQueuedLocations = async () => {
+    const queue = getQueuedLocations();
+    if (queue.length === 0) return;
+
+    const token = getToken();
+    if (!token) return;
+
+    try {
+      const response = await apiRequest("/tracking/locations/sync", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: { locations: queue },
+      });
+
+      const result = await response.json();
+
+      if (response.ok && result.success) {
+        clearQueuedLocations();
+        console.log(`تم رفع ${queue.length} موقع مخزن بنجاح`);
+      } else {
+        console.warn("Failed to sync offline locations:", result.message);
+      }
+    } catch (err) {
+      // النت لسا مو شغال، نخلي المواقع بالقائمة ونحاول مرة ثانية بعدين
+      console.warn("Flush offline locations failed, will retry later:", err.message);
+    }
+  };
 
   const connectSocket = () => {
     const token = getToken();
@@ -707,7 +915,10 @@ function App() {
       transports: ["websocket", "polling"],
     });
 
-    socket.on("connect", () => setStatus("متصل بالسيرفر"));
+    socket.on("connect", () => {
+      setStatus("متصل بالسيرفر");
+      flushQueuedLocations();
+    });
     socket.on("driver:location-accepted", () =>
       setStatus("مشاركة الموقع تعمل")
     );
@@ -732,7 +943,7 @@ function App() {
       const token = getToken();
       if (!token) throw new Error("لا يوجد Token للسائق");
 
-      const enableResponse = await fetch(`${API_URL}/tracking/enable`, {
+      const enableResponse = await apiRequest("/tracking/enable", {
         method: "PATCH",
         headers: { Authorization: `Bearer ${token}` },
       });
@@ -781,6 +992,9 @@ function App() {
           const activeSocket = socketRef.current || socket;
           if (activeSocket?.connected) {
             activeSocket.emit("driver:location", locationData);
+          } else {
+            // مافي اتصال حالياً - نخزن الموقع محلياً بدل ما نضيعه
+            queueLocationOffline(locationData);
           }
         }
       );
@@ -809,7 +1023,7 @@ function App() {
 
       backgroundTrackingStartedRef.current = false;
 
-      const response = await fetch(`${API_URL}/tracking/disable`, {
+      const response = await apiRequest("/tracking/disable", {
         method: "PATCH",
         headers: { Authorization: `Bearer ${token}` },
       });
@@ -862,10 +1076,10 @@ function App() {
         .filter(Boolean)
         .join(" | ");
 
-      const reportResponse = await fetch(`${API_URL}/reports`, {
+      const reportResponse = await apiRequest("/reports", {
         method: "POST",
         headers: authHeaders,
-        body: JSON.stringify({
+        body: {
           businessId: Number(businessId),
           title: "زيارة ميدانية",
           description: reportDescription || "تمت الزيارة",
@@ -878,7 +1092,7 @@ function App() {
                 },
               ]
             : [],
-        }),
+        },
       });
 
       const reportResult = await reportResponse.json();
@@ -888,16 +1102,16 @@ function App() {
       }
 
       if (hasCollection) {
-        const collectionResponse = await fetch(
-          `${API_URL}/transactions/collection`,
+        const collectionResponse = await apiRequest(
+          "/transactions/collection",
           {
             method: "POST",
             headers: authHeaders,
-            body: JSON.stringify({
+            body: {
               businessId: Number(businessId),
               amount: Number(collectionAmount),
               note: collectionNote || `تحصيل أثناء زيارة ${area || "المكان"}`,
-            }),
+            },
           }
         );
 
@@ -937,7 +1151,7 @@ function App() {
 
       const token = getToken();
 
-      const adminResponse = await fetch(`${API_URL}/messages/admin`, {
+      const adminResponse = await apiRequest("/messages/admin", {
         headers: { Authorization: `Bearer ${token}` },
       });
 
@@ -955,8 +1169,8 @@ function App() {
 
       setAdminUser(admin);
 
-      const response = await fetch(
-        `${API_URL}/messages/conversation/${admin.id}`,
+      const response = await apiRequest(
+        `/messages/conversation/${admin.id}`,
         {
           headers: { Authorization: `Bearer ${token}` },
         }
@@ -1455,12 +1669,16 @@ function App() {
               <p>
                 {callStatus === "ringing"
                   ? "بانتظار رد الإدارة..."
+                  : callStatus === "reconnecting"
+                  ? "جاري إعادة الاتصال..."
                   : callStatus === "accepted" || callStatus === "active"
                   ? "المكالمة جارية"
                   : "الإدارة تحاول الاتصال بك الآن"}
               </p>
 
-              {(callStatus === "accepted" || callStatus === "active") && (
+              {(callStatus === "accepted" ||
+                callStatus === "active" ||
+                callStatus === "reconnecting") && (
                 <div className="active-call-panel">
                   {activeCallType === "video" ? (
                     <div className="call-video-stage">
@@ -1482,7 +1700,11 @@ function App() {
                     <div className="audio-call-stage">
                       <div className="audio-call-avatar">📞</div>
                       <audio ref={remoteMediaRef} autoPlay />
-                      <strong>المكالمة الصوتية جارية</strong>
+                      <strong>
+                        {callStatus === "reconnecting"
+                          ? "جاري إعادة الاتصال..."
+                          : "المكالمة الصوتية جارية"}
+                      </strong>
                     </div>
                   )}
 
@@ -1528,7 +1750,10 @@ function App() {
                 </div>
               )}
 
-              {callStatus !== "accepted" && callStatus !== "active" && callStatus !== "ringing" && (
+              {callStatus !== "accepted" &&
+                callStatus !== "active" &&
+                callStatus !== "reconnecting" &&
+                callStatus !== "ringing" && (
                 <div className="incoming-call-actions">
                   <button
                     type="button"
@@ -1683,7 +1908,7 @@ function App() {
       </div>
     </div>
   );
-  
+
 }
 
 export default App;
